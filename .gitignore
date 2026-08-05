@@ -1,0 +1,14 @@
+#Mo hinh AI va file thuc thi
+*.gguf
+llama_bin/**
+
+#Moi truong ao Python
+.env/
+venv/
+
+#Cache va File bien dich Python
+__pycache__/**
+
+.env
+
+.vscode
