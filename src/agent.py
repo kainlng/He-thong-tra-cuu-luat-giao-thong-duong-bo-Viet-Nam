@@ -1,3 +1,4 @@
+from builtins import input, input, print
 import os
 import sys
 from pathlib import Path
@@ -111,10 +112,9 @@ HÃY TRẢ LỜI CÂU HỎI TRÊN DỰA TRÊN CÁC CĂN CỨ PHÁP LÝ TRÊN:"""
 
 def main():
     agent = LegalRAGAgent()
-    sample_query = "Đi xe máy trên đường cao tốc bị cấm hay không? Quy định tại điều nào?"
-    print(f"\nQuery: {sample_query}\n")
-    res = agent.answer(sample_query, top_k=3)
-    print("--- TRẢ LỜI CỦA TRỢ LÝ LUẬT ---")
+    user_query = input("Nhập câu hỏi của bạn về Luật Giao thông đường bộ Việt Nam: ")
+    res = agent.answer(user_query, top_k=3)
+    print("\n--- TRẢ LỜI CỦA TRỢ LÝ LUẬT ---")
     print(res["answer"])
 
 
