@@ -155,6 +155,9 @@ def parse_legal_chunks(markdown_file: Path) -> list[dict]:
     return chunks
 
 
+from src.fts_store import SQLiteFTSStore, FTS_DB_PATH
+
+
 def build_index():
     md_files = list(PROCESSED_DIR.glob("*.md"))
     if not md_files:
@@ -172,8 +175,15 @@ def build_index():
         print("No valid text chunks found.")
         return
 
-    print(f"Total chunks to embed: {len(all_chunks)}")
+    print(f"Total chunks to index: {len(all_chunks)}")
 
+    # 1. Build & Save SQLite FTS5 BM25 Index
+    print("\nBuilding SQLite FTS5 BM25 index...")
+    fts_store = SQLiteFTSStore(FTS_DB_PATH)
+    fts_store.reset_db()
+    fts_store.add_documents(all_chunks)
+
+    # 2. Build & Save FAISS Dense Vector Index
     embedder = MultilingualE5Embedder(model_name="intfloat/multilingual-e5-base")
     sample_texts = [c["text"] for c in all_chunks]
 

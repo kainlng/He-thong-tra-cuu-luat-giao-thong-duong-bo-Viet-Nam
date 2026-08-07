@@ -51,10 +51,6 @@ st.markdown(
 
 # Header Section
 st.markdown('<div class="main-title">🚦 Tra cứu Luật Trật tự, An toàn Giao thông Đường bộ</div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="subtitle">Hệ thống Hỏi đáp AI (RAG) tra cứu tự động Luật 36/2024/QH15 chính xác kèm căn cứ trích dẫn.</div>',
-    unsafe_allow_html=True,
-)
 
 # Sidebar Configuration
 with st.sidebar:
@@ -62,17 +58,18 @@ with st.sidebar:
     top_k = st.slider("Số lượng Điều luật trích dẫn (Top-K):", min_value=1, max_value=5, value=3)
 
     st.markdown("---")
-    st.markdown("### ℹ️ Thông tin Mô hình")
+    st.markdown("### ℹ️ Thông tin Mô hình & Search")
     st.markdown("- **Embedding**: `intfloat/multilingual-e5-base`")
-    st.markdown("- **Vector Database**: `FAISS (Cosine Similarity)`")
-    st.markdown("- **LLM**: `Qwen/Qwen2.5-72B-Instruct`")
+    st.markdown("- **Hybrid Retrieval**: `FAISS (Dense)` + `SQLite FTS5 (BM25)`")
+    st.markdown("- **Verification**: `FTS5 Double-Check & Fallback (Max 1 Retry)`")
+    st.markdown("- **LLM**: `Qwen/Qwen2.5-3B-Instruct`")
 
     if st.button("🧹 Xóa lịch sử trò chuyện"):
         st.session_state.messages = []
         st.rerun()
 
 # Initialize Legal RAG Agent once in session_state
-@st.cache_resource(show_spinner="Đang khởi tạo Trợ lý AI và Vector DB...")
+@st.cache_resource(show_spinner="Đang khởi tạo Trợ lý AI, FAISS và SQLite FTS5...")
 def get_agent():
     return LegalRAGAgent()
 
@@ -82,13 +79,37 @@ except Exception as e:
     st.error(f"Không thể khởi động Trợ lý AI: {e}")
     st.stop()
 
+# Helper renderer for verification audit block
+def render_verification_audit(verification: dict):
+    if not verification:
+        return
+    is_valid = verification.get("is_valid", True)
+    score = verification.get("score", 1.0)
+    cited = verification.get("cited_articles", [])
+    mismatched = verification.get("mismatched_articles", [])
+    retried = verification.get("retried", False)
+
+    if is_valid:
+        st.success(f"✅ **Đã kiểm chứng trích dẫn qua FTS5 BM25** (Độ khớp: {score:.0%})")
+    else:
+        st.warning(f"⚠️ **Cảnh báo kiểm chứng FTS5**: Phát hiện số Điều chưa khớp ({', '.join(mismatched)})")
+
+    with st.expander("🔍 Chi tiết Kiểm chứng Pháp lý (FTS5 BM25 Audit)"):
+        st.markdown(f"- **Trạng thái trích dẫn**: {'Đạt 100%' if is_valid else 'Cần xem xét'}")
+        st.markdown(f"- **Các Điều luật được trích dẫn**: `{', '.join(cited) if cited else 'Không trích dẫn cụ thể'}`")
+        if mismatched:
+            st.markdown(f"- ❌ **Điều luật chưa tìm thấy trong căn cứ**: `{', '.join(mismatched)}`")
+        if retried:
+            st.markdown("- 🔄 **Hệ thống đã tự động kích hoạt Fallback Retry (Tối đa 1 lần)**")
+
 # Initialize Chat History
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {
             "role": "assistant",
-            "content": "Xin chào! Tôi là Trợ lý AI Tra cứu Luật Trật tự, an toàn giao thông đường bộ 2024. Bạn có câu hỏi hoặc thắc mắc gì về quy định giao thông không?",
+            "content": "Xin chào! Tôi là Trợ lý AI Tra cứu Luật Trật tự, an toàn giao thông đường bộ. Bạn có câu hỏi hoặc thắc mắc gì về quy định giao thông không?",
             "sources": [],
+            "verification": None,
         }
     ]
 
@@ -96,6 +117,8 @@ if "messages" not in st.session_state:
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        if message.get("verification"):
+            render_verification_audit(message["verification"])
         if message.get("sources"):
             with st.expander("📜 Căn cứ pháp lý & Vị trí trích dẫn"):
                 for i, src in enumerate(message["sources"], 1):
@@ -106,7 +129,7 @@ for message in st.session_state.messages:
                     location = meta.get("location", f"{source_file} > {header}")
 
                     st.markdown(
-                        f"**{i}. {header}** *(Độ tương đồng: {score:.2%})*\n"
+                        f"**{i}. {header}** *(RRF Score: {score:.4f})*\n"
                         f"- 📌 **Vị trí trích dẫn**: `{location}`\n"
                         f"- 📄 **Tên văn bản gốc**: `{source_file}`\n\n"
                         f"```text\n{meta.get('text', '')}\n```"
@@ -121,12 +144,16 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn (vd: Đi xe máy trên
 
     # Generate assistant answer
     with st.chat_message("assistant"):
-        with st.spinner("Đang tra cứu Điều luật và tổng hợp câu trả lời..."):
+        with st.spinner("Đang tra cứu Hybrid (FAISS + FTS5 BM25) và kiểm chứng câu trả lời..."):
             res = agent.answer(prompt, top_k=top_k)
             answer_text = res["answer"]
             sources = res["sources"]
+            verification = res.get("verification")
 
             st.markdown(answer_text)
+            if verification:
+                render_verification_audit(verification)
+
             if sources:
                 with st.expander("📜 Căn cứ pháp lý & Vị trí trích dẫn"):
                     for i, src in enumerate(sources, 1):
@@ -137,11 +164,11 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn (vd: Đi xe máy trên
                         location = meta.get("location", f"{source_file} > {header}")
 
                         st.markdown(
-                            f"**{i}. {header}** *(Độ tương đồng: {score:.2%})*\n"
+                            f"**{i}. {header}** *(RRF Score: {score:.4f})*\n"
                             f"- 📌 **Vị trí trích dẫn**: `{location}`\n"
                             f"- 📄 **Tên văn bản gốc**: `{source_file}`\n\n"
                             f"```text\n{meta.get('text', '')}\n```"
                         )
 
     # Save to chat history
-    st.session_state.messages.append({"role": "assistant", "content": answer_text, "sources": sources})
+    st.session_state.messages.append({"role": "assistant", "content": answer_text, "sources": sources, "verification": verification})
