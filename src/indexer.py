@@ -22,6 +22,11 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
         pass
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from src.fts_store import SQLiteFTSStore, FTS_DB_PATH
+
 RAW_DIR = BASE_DIR / "data" / "raw"
 PROCESSED_DIR = BASE_DIR / "data" / "processed"
 VECTOR_DB_DIR = BASE_DIR / "vector_db"
@@ -153,9 +158,6 @@ def parse_legal_chunks(markdown_file: Path) -> list[dict]:
             })
 
     return chunks
-
-
-from src.fts_store import SQLiteFTSStore, FTS_DB_PATH
 
 
 def build_index():

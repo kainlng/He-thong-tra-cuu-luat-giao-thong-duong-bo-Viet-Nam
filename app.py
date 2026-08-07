@@ -62,7 +62,7 @@ with st.sidebar:
     st.markdown("- **Embedding**: `intfloat/multilingual-e5-base`")
     st.markdown("- **Hybrid Retrieval**: `FAISS (Dense)` + `SQLite FTS5 (BM25)`")
     st.markdown("- **Verification**: `FTS5 Double-Check & Fallback (Max 1 Retry)`")
-    st.markdown("- **LLM**: `Qwen/Qwen2.5-3B-Instruct`")
+    st.markdown("- **LLM**: `Qwen/Qwen2.5-72B-Instruct`")
 
     if st.button("🧹 Xóa lịch sử trò chuyện"):
         st.session_state.messages = []

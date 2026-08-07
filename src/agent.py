@@ -47,7 +47,7 @@ YÊU CẦU NGHIÊM NGẶT:
 class LegalRAGAgent:
     """Hybrid RAG Agent combining FAISS Dense Search + SQLite FTS5 BM25 with LLM Verification & Fallback."""
 
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-3B-Instruct"):
+    def __init__(self, model_name: str = "Qwen/Qwen2.5-72B-Instruct"):
         print("Initializing Legal RAG Agent...")
         self.hf_token = os.getenv("HF_TOKEN")
         if not self.hf_token:
