@@ -1,0 +1,14 @@
+services:
+  legal-rag-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: he_thong_tra_cuu_luat_giao_thong
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      - ./vector_db:/app/vector_db
+      - ./data:/app/data
+    restart: unless-stopped

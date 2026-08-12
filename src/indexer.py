@@ -5,7 +5,7 @@ import pickle
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables (.env) before importing HuggingFace libraries
+# Load environment variables (.env)
 load_dotenv()
 if "HF_TOKEN" in os.environ and "HUGGING_FACE_HUB_TOKEN" not in os.environ:
     os.environ["HUGGING_FACE_HUB_TOKEN"] = os.environ["HF_TOKEN"]
@@ -22,6 +22,11 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
         pass
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from src.fts_store import SQLiteFTSStore, FTS_DB_PATH
+
 RAW_DIR = BASE_DIR / "data" / "raw"
 PROCESSED_DIR = BASE_DIR / "data" / "processed"
 VECTOR_DB_DIR = BASE_DIR / "vector_db"
@@ -100,34 +105,57 @@ class FAISSVectorStore:
 
 
 def parse_legal_chunks(markdown_file: Path) -> list[dict]:
-    """Split legal markdown file into structured article chunks (Điều x)."""
+    """Split legal markdown file into structured article chunks with exact document position metadata."""
     text = markdown_file.read_text(encoding="utf-8")
     pattern = r"(Điều\s+\d+\.\s+[^\n]+)"
     parts = re.split(pattern, text)
 
     chunks = []
+    chunk_index = 1
     if len(parts) > 1:
         for i in range(1, len(parts), 2):
             header = parts[i].strip()
             content = parts[i + 1].strip() if i + 1 < len(parts) else ""
             full_chunk_text = f"{header}\n{content}"
             if len(full_chunk_text.strip()) > 20:
+                article_match = re.search(r"Điều\s+(\d+)", header)
+                article_num = article_match.group(1) if article_match else ""
+
                 chunks.append({
                     "source": markdown_file.name,
                     "header": header,
+                    "article_num": article_num,
+                    "chunk_index": chunk_index,
+                    "location": f"Văn bản: {markdown_file.name} > {header} (Vị trí #{chunk_index})",
                     "text": full_chunk_text[:1500],
                 })
+                chunk_index += 1
     else:
         lines = text.split("\n\n")
         current_chunk = ""
         for line in lines:
             if len(current_chunk) + len(line) > 800:
-                chunks.append({"source": markdown_file.name, "header": "General Text", "text": current_chunk.strip()})
+                chunks.append({
+                    "source": markdown_file.name,
+                    "header": "Nội dung chung",
+                    "article_num": "",
+                    "chunk_index": chunk_index,
+                    "location": f"Văn bản: {markdown_file.name} > Vị trí #{chunk_index}",
+                    "text": current_chunk.strip(),
+                })
+                chunk_index += 1
                 current_chunk = line + "\n\n"
             else:
                 current_chunk += line + "\n\n"
         if current_chunk.strip():
-            chunks.append({"source": markdown_file.name, "header": "General Text", "text": current_chunk.strip()})
+            chunks.append({
+                "source": markdown_file.name,
+                "header": "Nội dung chung",
+                "article_num": "",
+                "chunk_index": chunk_index,
+                "location": f"Văn bản: {markdown_file.name} > Vị trí #{chunk_index}",
+                "text": current_chunk.strip(),
+            })
 
     return chunks
 
@@ -149,8 +177,15 @@ def build_index():
         print("No valid text chunks found.")
         return
 
-    print(f"Total chunks to embed: {len(all_chunks)}")
+    print(f"Total chunks to index: {len(all_chunks)}")
 
+    # 1. Build & Save SQLite FTS5 BM25 Index
+    print("\nBuilding SQLite FTS5 BM25 index...")
+    fts_store = SQLiteFTSStore(FTS_DB_PATH)
+    fts_store.reset_db()
+    fts_store.add_documents(all_chunks)
+
+    # 2. Build & Save FAISS Dense Vector Index
     embedder = MultilingualE5Embedder(model_name="intfloat/multilingual-e5-base")
     sample_texts = [c["text"] for c in all_chunks]
 
