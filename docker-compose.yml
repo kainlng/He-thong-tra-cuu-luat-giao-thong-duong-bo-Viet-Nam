@@ -9,6 +9,8 @@ services:
     env_file:
       - .env
     volumes:
+      - ./app.py:/app/app.py
+      - ./src:/app/src
       - ./vector_db:/app/vector_db
       - ./data:/app/data
     restart: unless-stopped
