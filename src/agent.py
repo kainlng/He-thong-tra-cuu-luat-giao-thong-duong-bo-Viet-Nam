@@ -1,19 +1,23 @@
 import re
-from builtins import input, print
 import os
 import sys
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
-# Add project root directory to sys.path
 BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from dotenv import load_dotenv
 from huggingface_hub import InferenceClient
-from src.indexer import LlamaIndexEmbedder, FAISSVectorStore, INDEX_PATH, METADATA_PATH
-from src.fts_store import SQLiteFTSStore, FTS_DB_PATH
+
+from src.config import HF_TOKEN, LLM_MODEL_NAME
+from src.indexer import LlamaIndexEmbedder
+from src.postgres_manager import PostgresManager
+from src.qdrant_manager import QdrantManager
+from src.reranker import LegalReranker
+from src.query_engine import LegalQueryEngine
+from src.citation_builder import CitationBuilder
 
 # Ensure UTF-8 output encoding for Windows terminal
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -24,107 +28,79 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
 
 load_dotenv()
 
-SYSTEM_PROMPT = """Bạn là Trợ lý AI chuyên nghiệp về Luật Trật tự, an toàn giao thông đường bộ Việt Nam.
-Nhiệm vụ của bạn là giải đáp câu hỏi của người dùng một cách chính xác, minh bạch dựa TRỰC TIẾP trên các điều luật được cung cấp bên dưới.
+SYSTEM_PROMPT = """Bạn là Trợ lý AI chuyên nghiệp về Pháp luật Giao thông đường bộ Việt Nam (Luật Trật tự, an toàn giao thông đường bộ 2024 và các Nghị định liên quan).
+Nhiệm vụ của bạn là giải đáp câu hỏi của người dùng một cách chính xác, rõ ràng và minh bạch dựa TRỰC TIẾP trên các CĂN CỨ PHÁP LÝ được cung cấp.
 
 QUY TẮC BẮT BUỘC:
-1. Chỉ sử dụng thông tin trong phần "CĂN CỨ PHÁP LÝ DƯỚI ĐÂY" để trả lời.
-2. Trích dẫn rõ ràng tên Điều, Khoản (ví dụ: "Theo Điều 25, Khoản 1..."). Không được tự tạo hoặc trích dẫn sai số Điều luật.
-3. Nếu căn cứ được cung cấp không chứa thông tin để trả lời câu hỏi, hãy lịch sự thông báo rằng chưa tìm thấy quy định cụ thể trong văn bản luật hiện tại.
-4. Trả lời rõ ràng, dễ hiểu, trình bày bằng Markdown có cấu trúc (gạch đầu dòng, in đậm).
+1. Chỉ sử dụng thông tin trong các CĂN CỨ PHÁP LÝ bên dưới để trả lời.
+2. Trích dẫn chuẩn xác tên Văn bản, số Điều, Khoản, Điểm (ví dụ: "Theo Điều 9, Khoản 2 Luật Trật tự, an toàn giao thông đường bộ 36/2024/QH15...").
+3. Nêu rõ hiệu lực của văn bản (đang áp dụng hay quy định mới).
+4. Nếu căn cứ không chứa thông tin để trả lời câu hỏi, hãy nêu rõ chưa tìm thấy quy định trong tài liệu hiện tại, không tự bịa đặt số Điều luật.
+5. Trình bày khoa học bằng Markdown (tiêu đề, gạch đầu dòng, chữ in đậm).
 """
 
 FALLBACK_SYSTEM_PROMPT = """Bạn là Trợ lý AI kiểm tra tính chính xác pháp lý.
-LẦN TRẢ LỜI TRƯỚC BỊ PHÁT HIỆN TRÍCH DẪN SAI SỐ ĐIỀU LUẬT HOẶC KHÔNG CÓ TRONG CĂN CỨ.
+LẦN TRẢ LỜI TRƯỚC BỊ PHÁT HIỆN TRÍCH DẪN SAI SỐ ĐIỀU HOẶC KHÔNG CÓ TRONG CĂN CỨ PHÁP LÝ.
 
 YÊU CẦU NGHIÊM NGẶT:
-- CHỈ ĐƯỢC trích dẫn chính xác các số Điều luật CÓ MẶT TRONG DƯỚI ĐÂY.
+- CHỈ ĐƯỢC trích dẫn chính xác các số Điều luật CÓ MẶT trong căn cứ bên dưới.
 - Tuyệt đối không suy đoán hoặc tạo thêm số Điều luật mới.
-- Nếu không có câu trả lời trong văn bản bên dưới, hãy trả lời: "Chưa tìm thấy quy định cụ thể trong văn bản luật được cung cấp."
+- Nếu không có câu trả lời, hãy thông báo rõ ràng.
 """
 
 
 class LegalRAGAgent:
-    """Hybrid RAG Agent combining LlamaIndex Embeddings + FAISS Dense Search + SQLite FTS5 BM25."""
+    """Legal RAG Agent tích hợp PostgreSQL (Source of Truth) + Qdrant (Vector Index) + Hierarchical Retrieval + Reranker + Deterministic Citation."""
 
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-72B-Instruct"):
-        print("Initializing Legal RAG Agent with LlamaIndex...")
-        self.hf_token = os.getenv("HF_TOKEN")
+    def __init__(self, model_name: str = LLM_MODEL_NAME):
+        print(f"[Legal Agent] Khởi tạo Trợ lý AI Pháp luật ({model_name})...")
+        self.hf_token = HF_TOKEN or os.getenv("HF_TOKEN")
         if not self.hf_token:
-            raise ValueError("HF_TOKEN not found in environment variables (.env)")
+            print("[Cảnh báo Agent] Chưa tìm thấy HF_TOKEN trong .env, các lệnh gọi LLM có thể bị hạn chế.")
 
-        print(f"Connecting to Hugging Face LLM API ({model_name})...")
-        self.client = InferenceClient(api_key=self.hf_token)
         self.model_name = model_name
+        self.client = InferenceClient(api_key=self.hf_token) if self.hf_token else None
 
-        print("Loading LlamaIndex HuggingFaceEmbedding Model...")
-        self.embedder = LlamaIndexEmbedder(model_name="intfloat/multilingual-e5-base")
+        # Khởi tạo các components
+        print("[Legal Agent] Đang nạp Embedder, PostgreSQL, Qdrant và Reranker...")
+        self.embedder = LlamaIndexEmbedder()
+        self.postgres = PostgresManager()
+        self.qdrant = QdrantManager()
+        self.reranker = LegalReranker()
 
-        print("Loading FAISS Vector Database...")
-        if not INDEX_PATH.exists() or not METADATA_PATH.exists():
-            raise FileNotFoundError(
-                f"FAISS index files not found in {INDEX_PATH.parent}. Please run 'python src/indexer.py' first."
-            )
-        self.vector_store = FAISSVectorStore.load(INDEX_PATH, METADATA_PATH)
+        self.query_engine = LegalQueryEngine(
+            embedder=self.embedder,
+            qdrant_mgr=self.qdrant,
+            postgres_mgr=self.postgres,
+            reranker=self.reranker,
+        )
+        print("[Legal Agent] Hệ thống AI Agent đã sẵn sàng hoạt động.")
 
-        print("Loading SQLite FTS5 BM25 Database...")
-        if not FTS_DB_PATH.exists():
-            raise FileNotFoundError(
-                f"SQLite FTS5 database not found in {FTS_DB_PATH.parent}. Please run 'python src/indexer.py' first."
-            )
-        self.fts_store = SQLiteFTSStore(FTS_DB_PATH)
-        print("Hybrid Indexing Engine with LlamaIndex initialized successfully.")
+    def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
+        if not self.client:
+            return "Không thể gọi mô hình LLM do chưa cấu hình HF_TOKEN hợp lệ trong file .env."
 
-    def hybrid_retrieve(self, query: str, top_k: int = 3, rrf_k: int = 60) -> List[Dict[str, Any]]:
-        """Retrieve documents using Reciprocal Rank Fusion (RRF) combining FAISS Dense & SQLite FTS5 BM25."""
-        # 1. FAISS Dense Vector Search
-        query_emb = self.embedder.get_query_embedding(query)
-        dense_results = self.vector_store.search(query_emb, top_k=top_k * 2)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            max_tokens=1200,
+            temperature=0.15,
+        )
+        return response.choices[0].message.content
 
-        # 2. SQLite FTS5 BM25 Keyword Search
-        bm25_results = self.fts_store.search_bm25(query, top_k=top_k * 2)
-
-        # 3. Reciprocal Rank Fusion (RRF)
-        rrf_scores = {}
-        doc_map = {}
-
-        # Process Dense Ranks
-        for rank, item in enumerate(dense_results, 1):
-            doc_id = item["metadata"].get("location") or item["metadata"].get("header")
-            doc_map[doc_id] = item["metadata"]
-            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + (1.0 / (rrf_k + rank))
-
-        # Process BM25 Ranks
-        for rank, item in enumerate(bm25_results, 1):
-            doc_id = item["metadata"].get("location") or item["metadata"].get("header")
-            doc_map[doc_id] = item["metadata"]
-            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + (1.0 / (rrf_k + rank))
-
-        # Sort combined documents by RRF score descending
-        sorted_docs = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
-
-        hybrid_results = []
-        for doc_id, score in sorted_docs:
-            hybrid_results.append({
-                "score": score,
-                "metadata": doc_map[doc_id],
-            })
-
-        return hybrid_results
-
-    def verify_answer(self, answer_text: str, retrieved_sources: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Verify LLM generated answer against SQLite FTS5 database and retrieved legal context."""
+    def verify_answer(self, answer_text: str, retrieved_contexts: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Kiểm chứng trích dẫn số Điều luật trong câu trả lời với Căn cứ thực tế từ PostgreSQL."""
         cited_articles = set(re.findall(r"Điều\s+(\d+)", answer_text, flags=re.IGNORECASE))
         context_articles = set()
 
-        for src in retrieved_sources:
-            meta = src.get("metadata", {})
-            header = meta.get("header", "")
-            art_num = meta.get("article_num", "")
+        for ctx in retrieved_contexts:
+            art_num = str(ctx.get("article_number", "")).strip()
             if art_num:
                 context_articles.add(art_num)
-            found_in_header = re.findall(r"Điều\s+(\d+)", header, flags=re.IGNORECASE)
-            context_articles.update(found_in_header)
 
         mismatched_articles = []
         verified_articles = []
@@ -133,10 +109,7 @@ class LegalRAGAgent:
             if art in context_articles:
                 verified_articles.append(art)
             else:
-                if self.fts_store.verify_citation(art):
-                    verified_articles.append(art)
-                else:
-                    mismatched_articles.append(art)
+                mismatched_articles.append(art)
 
         is_valid = len(mismatched_articles) == 0
         total_citations = len(cited_articles)
@@ -150,81 +123,90 @@ class LegalRAGAgent:
             "mismatched_articles": mismatched_articles,
         }
 
-    def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=messages,
-            max_tokens=1024,
-            temperature=0.2,
+    def answer(
+        self,
+        query: str,
+        top_k: int = 20,
+        top_n: int = 4,
+        force_current: Optional[bool] = None,
+        max_retries: int = 1,
+    ) -> Dict[str, Any]:
+        """Thực hiện chu trình RAG hoàn chỉnh:
+        Query -> Time Intent -> Qdrant Filter + Dense Search -> PostgreSQL Context Expansion -> Reranking -> LLM Generation -> Verification.
+        """
+        time_intent = self.query_engine.parse_time_intent(query)
+        
+        # 1. Retrieval
+        retrieved_contexts = self.query_engine.retrieve(
+            query=query,
+            top_k=top_k,
+            top_n=top_n,
+            force_current=force_current,
         )
-        return response.choices[0].message.content
 
-    def answer(self, query: str, top_k: int = 3, max_retries: int = 1) -> dict:
-        """Retrieve context using Hybrid RRF Search, generate response, and execute verification fallback."""
-        sources = self.hybrid_retrieve(query, top_k=top_k)
+        # 2. Xây dựng Context và Deterministic Citations
+        context_str = CitationBuilder.build_llm_context(retrieved_contexts)
+        citations = CitationBuilder.generate_citations(retrieved_contexts)
 
-        # Construct context string
-        context_blocks = []
-        for i, item in enumerate(sources, 1):
-            meta = item["metadata"]
-            header = meta.get("header", "Điều luật")
-            text = meta.get("text", "")
-            score = item.get("score", 0.0)
-            context_blocks.append(f"--- CĂN CỨ PHÁP LÝ {i} (RRF Score: {score:.4f}) ---\n{header}\n{text}\n")
+        user_prompt = (
+            f"CĂN CỨ PHÁP LÝ DƯỚI ĐÂY:\n{context_str}\n\n"
+            f"CÂU HỎI CỦA NGƯỜI DÙNG:\n{query}\n\n"
+            f"HÃY GIẢI ĐÁP CÂU HỎI TRÊN VÀ TRÍCH DẪN ĐẦY ĐỦ CĂN CỨ:"
+        )
 
-        context_str = "\n".join(context_blocks)
-        user_prompt = f"CĂN CỨ PHÁP LÝ DƯỚI ĐÂY:\n{context_str}\n\nCÂU HỎI CỦA NGƯỜI DÙNG:\n{query}\n\nHÃY TRẢ LỜI CÂU HỎI TRÊN:"
-
+        # 3. LLM Call
         try:
             answer_text = self._call_llm(SYSTEM_PROMPT, user_prompt)
         except Exception as exc:
             return {
                 "query": query,
-                "answer": f"Đã xảy ra lỗi khi gọi LLM API: {exc}",
-                "sources": sources,
-                "verification": {"is_valid": False, "score": 0.0, "mismatched_articles": [], "retried": False},
+                "answer": f"Đã xảy ra lỗi khi gọi mô hình ngôn ngữ: {exc}",
+                "citations": citations,
+                "retrieved_contexts": retrieved_contexts,
+                "verification": {"is_valid": False, "score": 0.0, "mismatched_articles": []},
+                "time_intent": time_intent,
             }
 
-        # Run verification check
-        audit = self.verify_answer(answer_text, sources)
+        # 4. Kiểm chứng trích dẫn
+        audit = self.verify_answer(answer_text, retrieved_contexts)
         retried = False
 
-        # Fallback Retry Loop with strict stop condition (max_retries = 1)
         if not audit["is_valid"] and max_retries > 0:
             retried = True
-            print(f"[Verification Alert] Detected citation mismatch: {audit['mismatched_articles']}. Executing fallback (retry 1/1)...")
+            print(f"[Verification Alert] Phát hiện trích dẫn Điều chưa khớp: {audit['mismatched_articles']}. Đang thực hiện fallback retry...")
             fallback_prompt = (
                 f"{user_prompt}\n\n"
-                f"[CẢNH BÁO KIỂM TRA]: Lần trả lời trước bị phát hiện số Điều ({', '.join(audit['mismatched_articles'])}) "
-                f"không có trong căn cứ. Hãy chỉnh sửa lại chỉ trích dẫn đúng các Điều luật có trong căn cứ trên."
+                f"[CẢNH BÁO KIỂM CHỨNG]: Lần trả lời trước bị phát hiện số Điều ({', '.join(audit['mismatched_articles'])}) "
+                f"không có trong căn cứ. Hãy chỉ trích dẫn đúng các Điều luật có trong căn cứ trên."
             )
             try:
                 answer_text = self._call_llm(FALLBACK_SYSTEM_PROMPT, fallback_prompt)
-                audit = self.verify_answer(answer_text, sources)
+                audit = self.verify_answer(answer_text, retrieved_contexts)
             except Exception as exc:
-                print(f"[Fallback Warning] Retry call failed: {exc}")
+                print(f"[Fallback Warning] Lỗi khi retry: {exc}")
 
         audit["retried"] = retried
 
         return {
             "query": query,
             "answer": answer_text,
-            "sources": sources,
+            "citations": citations,
+            "retrieved_contexts": retrieved_contexts,
             "verification": audit,
+            "time_intent": time_intent,
         }
 
 
 def main():
     agent = LegalRAGAgent()
-    user_query = input("Nhập câu hỏi của bạn về Luật Giao thông đường bộ Việt Nam: ")
-    res = agent.answer(user_query, top_k=3)
+    user_query = input("Nhập câu hỏi của bạn về Luật Giao thông đường bộ: ")
+    res = agent.answer(user_query)
     print("\n--- TRẢ LỜI CỦA TRỢ LÝ LUẬT ---")
     print(res["answer"])
-    print("\n--- KẾT QUẢ KIỂM TRA FTS5 BM25 ---")
+    print("\n--- TRÍCH DẪN NGUỒN XÁC THỰC (DETERMINISTIC CITATIONS) ---")
+    for c in res["citations"]:
+        print(f"{c['citation_text']} (Hiệu lực: {c['status']}) - Score: {c['score']:.4f}")
+    print("\n--- KẾT QUẢ KIỂM CHỨNG ---")
     print(res["verification"])
 
 

@@ -1,7 +1,3 @@
-import faiss
-import pickle
-import sqlite3
-import numpy as np
 import sys
 from pathlib import Path
 
@@ -12,68 +8,58 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+# Add project root directory to sys.path
 BASE_DIR = Path(__file__).resolve().parent
-VECTOR_DB_DIR = BASE_DIR / "vector_db"
-INDEX_PATH = VECTOR_DB_DIR / "faiss_index.bin"
-METADATA_PATH = VECTOR_DB_DIR / "metadata.pkl"
-FTS_DB_PATH = VECTOR_DB_DIR / "legal_fts.db"
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from src.postgres_manager import PostgresManager
+from src.qdrant_manager import QdrantManager
 
 
-def inspect_vector_store():
-    print("=" * 60)
-    print("🔍 KIỂM TRA CẤU TRÚC VECTOR DATABASE (LlamaIndex + FAISS + FTS5)")
-    print("=" * 60)
+def inspect_databases():
+    print("=" * 70)
+    print("🔍 KIỂM TRA CƠ SỞ DỮ LIỆU PHÁP LUẬT PHÂN CẤP (PostgreSQL + Qdrant)")
+    print("=" * 70)
 
-    if not INDEX_PATH.exists() or not METADATA_PATH.exists():
-        print(f"❌ Không tìm thấy file index tại {VECTOR_DB_DIR}")
-        return
+    # 1. Inspect PostgreSQL Source of Truth
+    pg_mgr = PostgresManager()
+    stats = pg_mgr.get_database_stats()
 
-    index = faiss.read_index(str(INDEX_PATH))
-    with open(METADATA_PATH, "rb") as f:
-        metadata = pickle.load(f)
+    print("\n🏛️ 1. POSTGRESQL RELATIONAL STORE (Source of Truth - 7 Bảng):")
+    print(f" - Số lượng Văn bản (Documents) : {stats.get('documents', 0)}")
+    print(f" - Số lượng Phiên bản (Versions): {stats.get('versions', 0)}")
+    print(f" - Số lượng Chương (Chapters)   : {stats.get('chapters', 0)}")
+    print(f" - Số lượng Điều luật (Articles): {stats.get('articles', 0)}")
+    print(f" - Số lượng Khoản (Clauses)     : {stats.get('clauses', 0)}")
+    print(f" - Số lượng Điểm (Points)       : {stats.get('points', 0)}")
+    print(f" - Số lượng Chunks (Full Text)  : {stats.get('chunks', 0)}")
 
-    print("\n📦 1. FAISS DENSE VECTOR STORE (faiss_index.bin & metadata.pkl)")
-    print(f" - Tổng số vector (ntotal)    : {index.ntotal}")
-    print(f" - Số chiều vector (dimension): {index.d} (LlamaIndex intfloat/multilingual-e5-base)")
-    print(f" - Loại Index FAISS           : {type(index).__name__} (Inner Product / Cosine)")
-    print(f" - Tổng số bản ghi metadata   : {len(metadata)}")
+    all_chunks = pg_mgr.get_all_chunks()
+    if all_chunks:
+        print("\n📋 MẪU CHUNK ĐƯỢC LƯU TRONG POSTGRESQL:")
+        sample = all_chunks[0]
+        print(f"🔹 Chunk ID   : {sample['id']}")
+        print(f"   • Loại Chunk : {sample.get('chunk_type')}")
+        print(f"   • Metadata   : {sample.get('metadata')}")
+        print(f"   • Hiệu lực   : {sample.get('validity')}")
+        print(f"   • Trích đoạn : \"{sample.get('content', '')[:160]}...\"")
 
-    # Display First 2 Vectors with their metadata
-    print("\n" + "-" * 60)
-    print("📋 CHI TIẾT VECTOR MẪU ĐƯỢC LƯU TRỮ:")
-    print("-" * 60)
-
-    for i in range(min(2, index.ntotal)):
-        vector = index.reconstruct(i)
-        meta = metadata[i]
-
-        print(f"\n🔹 Vector ID #{i}:")
-        print(f"   • Vector shape  : {vector.shape} (mảng 768 số thực float32)")
-        print(f"   • 10 giá trị đầu: {vector[:10].round(6).tolist()} ...")
-        print(f"   • Chuẩn L2 norm : {np.linalg.norm(vector):.4f} (đã chuẩn hóa cosine)")
-        print(f"   • Tiêu đề Điều  : {meta.get('header')}")
-        print(f"   • File nguồn    : {meta.get('source')}")
-        print(f"   • Vị trí        : {meta.get('location')}")
-        print(f"   • Đoạn văn bản  :\n     \"{meta.get('text', '')[:180]}...\"")
-
-    # 2. Inspect SQLite FTS5 BM25 Store
-    if FTS_DB_PATH.exists():
-        conn = sqlite3.connect(str(FTS_DB_PATH))
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT COUNT(*) FROM legal_fts")
-        fts_count = cursor.fetchone()[0]
-
-        cursor.execute("SELECT source, header, article_num, chunk_index, location FROM legal_fts LIMIT 2")
-        rows = cursor.fetchall()
-
-        print("\n" + "=" * 60)
-        print(f"🗄️ 2. SQLITE FTS5 BM25 STORE (legal_fts.db) - {fts_count} bản ghi")
-        print("=" * 60)
-        for row in rows:
-            print(f" - [Index #{row['chunk_index']}] {row['header']} (Nguồn: {row['source']})")
+    # 2. Inspect Qdrant Vector Search Index
+    print("\n" + "-" * 70)
+    print("🌌 2. QDRANT VECTOR SEARCH INDEX (Minimal Payload + Embeddings):")
+    qdrant_mgr = QdrantManager()
+    if qdrant_mgr.client:
+        try:
+            coll_info = qdrant_mgr.client.get_collection(qdrant_mgr.collection_name)
+            print(f" - Collection Name : '{qdrant_mgr.collection_name}'")
+            print(f" - Vector Dimension: {qdrant_mgr.vector_dim} (intfloat/multilingual-e5-base)")
+            print(f" - Metric Distance : Cosine")
+            print(f" - Points Count    : {coll_info.points_count}")
+        except Exception as exc:
+            print(f" - Qdrant Info Note: {exc}")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
-    inspect_vector_store()
+    inspect_databases()

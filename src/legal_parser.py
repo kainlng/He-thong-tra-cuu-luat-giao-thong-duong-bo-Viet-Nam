@@ -1,0 +1,344 @@
+import re
+import hashlib
+from pathlib import Path
+from typing import Dict, List, Any, Optional, Tuple
+
+
+def clean_legal_markdown(text: str) -> str:
+    """Loại bỏ tiêu đề trang, công báo, và chuẩn hóa khoảng trắng trong văn bản luật."""
+    # 1. Loại bỏ dòng CÔNG BÁO
+    text = re.sub(r"(?im)^\s*CÔNG BÁO/[^\n]*\n?", "", text)
+    # 2. Loại bỏ VĂN BẢN QUY PHẠM PHÁP LUẬT
+    text = re.sub(r"(?im)^\s*VĂN BẢN QUY PHẠM PHÁP LUẬT\s*\n?", "", text)
+    # 3. Loại bỏ (Tiếp theo Công báo...)
+    text = re.sub(r"(?im)^\s*\(?Tiếp theo Công báo[^\n]*\)?\s*\n?", "", text)
+    # 4. Loại bỏ banner CHỦ TỊCH NƯỚC - QUỐC HỘI
+    text = re.sub(r"(?im)^\s*#+\s*(?:CHỦ TỊCH NƯỚC\s*-\s*QUỐC HỘI|QUỐC HỘI|CÔNG BÁO).*?\n", "", text)
+    # 5. Chuẩn hóa nhiều dòng trắng liên tiếp thành 2 dòng
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def calculate_file_hash(file_path: Path) -> str:
+    """Tính mã băm SHA-256 của file để đảm bảo tính Idempotent (chống nạp trùng)."""
+    hasher = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return f"sha256:{hasher.hexdigest()}"
+
+
+class HierarchicalLegalParser:
+    """Parser phân tích cú pháp văn bản pháp luật Việt Nam:
+    Văn bản -> Chương -> Điều -> Khoản -> Điểm.
+    """
+
+    def __init__(self):
+        # Regex nhận diện Chương: Chương I, Chương II, Chương 1...
+        self.chapter_pattern = re.compile(
+            r"(?:^|\n)(?:#+\s*)?(Chương\s+([IVXLCDM\d]+)[\.:\s]*([^\n]*))",
+            re.IGNORECASE,
+        )
+
+        # Regex nhận diện Điều: Điều 1, Điều 2., **Điều 3.**...
+        self.article_pattern = re.compile(
+            r"(?:^|\n)(?:#+\s*|\*{1,2}\s*)?(Điều\s+(\d+)[A-Za-z]?[\.:\s\-]*([^\n\*\#]*))(?:\*{1,2})?",
+            re.IGNORECASE,
+        )
+
+        # Regex nhận diện Khoản: 1. Nội dung, Khoản 1. Nội dung...
+        self.clause_pattern = re.compile(
+            r"(?:^|\n)(?:Khoản\s+)?(\d+)[\.\)]\s+([^\n]+(?:\n(?!\s*(?:(?:Khoản\s+)?\d+[\.\)]|[a-đ]\)|\*{1,2}?Điều|\#+))[^\n]+)*)",
+            re.IGNORECASE,
+        )
+
+        # Regex nhận diện Điểm: a) Nội dung, Điểm a) Nội dung...
+        self.point_pattern = re.compile(
+            r"(?:^|\n)(?:Điểm\s+)?([a-đA-Đ])[\.\)]\s+([^\n]+(?:\n(?!\s*(?:(?:Khoản\s+)?\d+[\.\)]|[a-đ]\)|\*{1,2}?Điều|\#+))[^\n]+)*)",
+            re.IGNORECASE,
+        )
+
+    def extract_document_info(self, text: str, file_name: str) -> Dict[str, Any]:
+        """Trích xuất thông tin tổng quan của văn bản từ tên file hoặc phần đầu văn bản."""
+        doc_num = ""
+        doc_type = "luat"
+        title = ""
+
+        # 1. Ưu tiên phát hiện số hiệu từ nội dung văn bản trước
+        num_match = re.search(r"(?:Số|Luật số|Nghị định số|Thông tư số)[\s:]*([0-9]+[/-][0-9]+[/-][A-Za-z0-9\-]+)", text, re.IGNORECASE)
+        if not num_match:
+            # 2. Nếu không thấy trong nội dung, phát hiện từ tên file
+            num_match = re.search(r"(\d+[-/]\d+[-/][A-Za-z0-9\-]+)", file_name)
+
+        if num_match:
+            raw_num = num_match.group(1).replace("-", "/")
+            parts = raw_num.split("/")
+            if len(parts) >= 3:
+                doc_num = f"{parts[0]}/{parts[1]}/{parts[2].upper()}"
+            else:
+                doc_num = raw_num.upper()
+        else:
+            doc_num = file_name.replace(".md", "").replace(".pdf", "").upper()
+
+        # Xác định loại văn bản
+        if "NĐ-CP" in doc_num or "ND-CP" in doc_num or "nghi_dinh" in file_name.lower():
+            doc_type = "nghi_dinh"
+        elif "TT-" in doc_num or "thong_tu" in file_name.lower():
+            doc_type = "thong_tu"
+        elif "QH" in doc_num or "luat" in file_name.lower():
+            doc_type = "luat"
+
+        # Trích xuất tiêu đề chính
+        first_lines = [l.strip("#* \t") for l in text.split("\n")[:10] if l.strip()]
+        for line in first_lines:
+            if any(k in line.upper() for k in ["LUẬT", "NGHỊ ĐỊNH", "THÔNG TƯ", "QUY ĐỊNH"]):
+                title = line
+                break
+        if not title:
+            title = f"Văn bản pháp luật {doc_num}"
+
+        doc_id = "doc_" + re.sub(r"[^a-zA-Z0-9_]", "_", doc_num).lower().strip("_")
+
+        return {
+            "id": doc_id,
+            "document_number": doc_num,
+            "title": title,
+            "short_title": f"{doc_type.capitalize()} {doc_num}",
+            "document_type": doc_type,
+            "domain": ["giao_thong_duong_bo"],
+            "current_status": "active",
+            "effective_from": "2025-01-01",  # Ngày hiệu lực chuẩn mặc định
+            "effective_to": None,
+            "is_current": True,
+        }
+
+    def parse_clauses_and_points(
+        self, article_text: str, doc_id: str, ver_id: str, chap_id: Optional[str], art_id: str
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Tách các Khoản và Điểm bên trong một Điều luật."""
+        clauses = []
+        points = []
+        seen_clause_ids = set()
+        seen_point_ids = set()
+
+        # Tách theo từng dòng bắt đầu bằng số thứ tự Khoản: 1., 2., 3...
+        clause_blocks = re.split(r"(?:^|\n)(?=(?:Khoản\s+)?\d+[\.\)])", article_text)
+
+        clause_order = 1
+        for block in clause_blocks:
+            block = block.strip()
+            if not block:
+                continue
+
+            match_clause = re.match(r"^(?:Khoản\s+)?(\d+)[\.\)]\s*(.*)", block, re.DOTALL)
+            if match_clause:
+                clause_num = match_clause.group(1)
+                clause_content = match_clause.group(2).strip()
+                base_clause_id = f"clause_{art_id.replace('article_', '')}_{clause_num.zfill(2)}"
+                clause_id = base_clause_id
+                c_idx = 2
+                while clause_id in seen_clause_ids:
+                    clause_id = f"{base_clause_id}_{c_idx}"
+                    c_idx += 1
+                seen_clause_ids.add(clause_id)
+
+                # Kiểm tra xem trong Khoản này có chứa các Điểm: a), b), c)... không
+                point_blocks = re.split(r"(?:^|\n)(?=(?:Điểm\s+)?[a-đA-Đ][\.\)])", clause_content)
+                
+                point_order = 1
+                clause_body = point_blocks[0].strip() if point_blocks else clause_content
+
+                if len(point_blocks) > 1:
+                    for p_block in point_blocks[1:]:
+                        p_block = p_block.strip()
+                        if not p_block:
+                            continue
+                        match_point = re.match(r"^(?:Điểm\s+)?([a-đA-Đ])[\.\)]\s*(.*)", p_block, re.DOTALL)
+                        if match_point:
+                            p_label = match_point.group(1).lower()
+                            p_content = match_point.group(2).strip()
+                            base_point_id = f"point_{clause_id.replace('clause_', '')}_{p_label}"
+                            point_id = base_point_id
+                            p_idx = 2
+                            while point_id in seen_point_ids:
+                                point_id = f"{base_point_id}_{p_idx}"
+                                p_idx += 1
+                            seen_point_ids.add(point_id)
+
+                            points.append({
+                                "id": point_id,
+                                "document_id": doc_id,
+                                "version_id": ver_id,
+                                "chapter_id": chap_id,
+                                "article_id": art_id,
+                                "clause_id": clause_id,
+                                "point_label": p_label,
+                                "content": p_content,
+                                "order_num": point_order,
+                                "parent_id": clause_id,
+                            })
+                            point_order += 1
+
+                clauses.append({
+                    "id": clause_id,
+                    "document_id": doc_id,
+                    "version_id": ver_id,
+                    "chapter_id": chap_id,
+                    "article_id": art_id,
+                    "clause_number": clause_num,
+                    "content": clause_body,
+                    "order_num": clause_order,
+                    "parent_id": art_id,
+                })
+                clause_order += 1
+            else:
+                # Nếu Điều không chia thành các Khoản đánh số (chỉ có 1 đoạn văn chung)
+                if not clauses:
+                    clause_id = f"clause_{art_id.replace('article_', '')}_01"
+                    if clause_id not in seen_clause_ids:
+                        seen_clause_ids.add(clause_id)
+                        clauses.append({
+                            "id": clause_id,
+                            "document_id": doc_id,
+                            "version_id": ver_id,
+                            "chapter_id": chap_id,
+                            "article_id": art_id,
+                            "clause_number": "1",
+                            "content": block,
+                            "order_num": 1,
+                            "parent_id": art_id,
+                        })
+                clause_order += 1
+
+        return clauses, points
+
+    def parse_markdown(self, markdown_text: str, file_name: str, file_hash: str = "") -> Dict[str, Any]:
+        """Phân tích toàn bộ văn bản markdown thành cây cấu trúc pháp lý hoàn chỉnh."""
+        cleaned_text = clean_legal_markdown(markdown_text)
+        doc_info = self.extract_document_info(cleaned_text, file_name)
+
+        doc_id = doc_info["id"]
+        ver_id = f"version_{doc_id.replace('doc_', '')}_v1"
+
+        # 1. Tạo LegalDocument
+        document = {
+            "id": doc_id,
+            "document_number": doc_info["document_number"],
+            "title": doc_info["title"],
+            "short_title": doc_info["short_title"],
+            "document_type": doc_info["document_type"],
+            "issuing_agency": {"name": "Quốc hội / Chính phủ", "code": "QUOC_HOI"},
+            "domain": doc_info["domain"],
+            "issued_date": "2024-06-27",
+            "first_effective_date": doc_info["effective_from"],
+            "current_status": doc_info["current_status"],
+            "language": "vi",
+            "source": {
+                "file_name": file_name,
+                "file_hash": file_hash,
+                "source_type": "markdown",
+            },
+        }
+
+        # 2. Tạo LegalVersion
+        version = {
+            "id": ver_id,
+            "document_id": doc_id,
+            "version_number": 1,
+            "effective_from": doc_info["effective_from"],
+            "effective_to": doc_info["effective_to"],
+            "status": doc_info["current_status"],
+            "is_current": doc_info["is_current"],
+            "amended_by": [],
+            "amends": [],
+            "replaces": None,
+            "legal_basis": [],
+        }
+
+        # Map to store unique chapters and merged articles
+        chapters_dict = {}
+        articles_dict = {}
+
+        current_chapter_id = None
+        current_chapter_num = ""
+        chapter_order = 1
+        article_order = 1
+
+        article_matches = list(self.article_pattern.finditer(cleaned_text))
+
+        for i, match in enumerate(article_matches):
+            raw_art_header = match.group(1).strip()
+            art_num = match.group(2).strip()
+            art_title = match.group(3).strip() if match.group(3) else ""
+
+            art_id = f"article_{doc_id.replace('doc_', '')}_{art_num.zfill(2)}"
+
+            # Lấy nội dung của Điều
+            start_pos = match.end()
+            end_pos = article_matches[i + 1].start() if i + 1 < len(article_matches) else len(cleaned_text)
+            art_body = cleaned_text[start_pos:end_pos].strip()
+
+            # Kiểm tra xem có Chương mới nằm giữa Điều trước và Điều hiện tại không
+            preceding_text = cleaned_text[article_matches[i - 1].end() if i > 0 else 0 : match.start()]
+            chap_match = self.chapter_pattern.search(preceding_text)
+            if chap_match:
+                chap_raw = chap_match.group(1).strip()
+                chap_num = chap_match.group(2).strip()
+                chap_title = chap_match.group(3).strip() if chap_match.group(3) else ""
+                current_chapter_id = f"chapter_{doc_id.replace('doc_', '')}_{chap_num.lower()}"
+                current_chapter_num = chap_num
+
+                if current_chapter_id not in chapters_dict:
+                    chapters_dict[current_chapter_id] = {
+                        "id": current_chapter_id,
+                        "document_id": doc_id,
+                        "version_id": ver_id,
+                        "chapter_number": chap_num,
+                        "title": chap_title or chap_raw,
+                        "order_num": chapter_order,
+                        "parent_id": None,
+                    }
+                    chapter_order += 1
+
+            if art_id not in articles_dict:
+                articles_dict[art_id] = {
+                    "id": art_id,
+                    "document_id": doc_id,
+                    "version_id": ver_id,
+                    "chapter_id": current_chapter_id,
+                    "article_number": art_num,
+                    "title": art_title or f"Điều {art_num}",
+                    "order_num": article_order,
+                    "parent_id": current_chapter_id,
+                    "raw_text": f"Điều {art_num}. {art_title}\n{art_body}".strip(),
+                    "body_segments": [art_body] if art_body else [],
+                }
+                article_order += 1
+            else:
+                # Nếu Điều này bị ngắt trang lặp lại tiêu đề, gộp phần nội dung tiếp theo
+                if art_body:
+                    articles_dict[art_id]["body_segments"].append(art_body)
+                    articles_dict[art_id]["raw_text"] += "\n" + art_body
+
+        articles = list(articles_dict.values())
+        chapters = list(chapters_dict.values())
+        all_clauses = []
+        all_points = []
+
+        # Phân tích Khoản và Điểm cho từng Điều đã được hợp nhất hoàn chỉnh
+        for art in articles:
+            combined_body = "\n".join(art.get("body_segments", []))
+            clauses, points = self.parse_clauses_and_points(
+                combined_body, doc_id, ver_id, art.get("chapter_id"), art["id"]
+            )
+            all_clauses.extend(clauses)
+            all_points.extend(points)
+
+        return {
+            "document": document,
+            "version": version,
+            "chapters": chapters,
+            "articles": articles,
+            "clauses": all_clauses,
+            "points": all_points,
+        }
