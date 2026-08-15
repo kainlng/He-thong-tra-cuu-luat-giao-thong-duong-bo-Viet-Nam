@@ -1,10 +1,7 @@
 import os
-import importlib.util
-from pathlib import Path
 import sys
-
-# Disable LLM post-processing in Marker to avoid llama-server dependence and memory crashes
-os.environ["DISABLE_LLM"] = "true"
+import re
+from pathlib import Path
 
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     try:
@@ -23,91 +20,99 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 RAW_DIR = BASE_DIR / "data" / "raw"
 PROCESSED_DIR = BASE_DIR / "data" / "processed"
-LLAMA_BIN_DIR = BASE_DIR / "llama_bin"
-LLAMA_SERVER_BINARY = LLAMA_BIN_DIR / "llama-server.exe"
-
-if LLAMA_SERVER_BINARY.exists():
-    os.environ["LLAMA_CPP_BINARY"] = str(LLAMA_SERVER_BINARY)
 
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def load_marker_processor():
-    """Load Marker PDF processor without LLM post-processing dependency."""
-    if (
-        importlib.util.find_spec("marker.converters.pdf") is not None
-        and importlib.util.find_spec("marker.models") is not None
-        and importlib.util.find_spec("marker.output") is not None
-    ):
-        pdf_module = importlib.import_module("marker.converters.pdf")
-        model_module = importlib.import_module("marker.models")
-        output_module = importlib.import_module("marker.output")
-
-        PdfConverter = pdf_module.PdfConverter
-        create_model_dict = model_module.create_model_dict
-        text_from_rendered = output_module.text_from_rendered
-
-        print("Đang nạp các mô hình AI của Marker v2 (Pure OCR) vào RAM...")
-        model_dict = create_model_dict()
-        converter = PdfConverter(artifact_dict=model_dict, config={"use_llm": False})
-
-        def process_pdf(pdf_path: Path) -> str:
-            rendered = converter(str(pdf_path))
-            text, _, _ = text_from_rendered(rendered)
-            return text
-
-        return process_pdf
-
-    if importlib.util.find_spec("marker.convert") is not None:
-        convert_module = importlib.import_module("marker.convert")
-        models_module = importlib.import_module("marker.models")
-
-        convert_single_pdf = convert_module.convert_single_pdf
-        load_all_models = models_module.load_all_models
-
-        print("Đang tải các mô hình AI của Surya/Marker...")
-        model_lst = load_all_models()
-
-        def process_pdf(pdf_path: Path) -> str:
-            full_text, _, _ = convert_single_pdf(str(pdf_path), model_lst)
-            return full_text
-
-        return process_pdf
-
-    raise ImportError(
-        "Marker could not be imported. Install marker-pdf in your Python environment."
-    )
+def clean_legal_markdown(text: str) -> str:
+    """Strip running gazette headers, footers, and redundant page titles from extracted markdown."""
+    # 1. Remove CÔNG BÁO running headers
+    text = re.sub(r"(?im)^\s*CÔNG BÁO/[^\n]*\n?", "", text)
+    # 2. Remove VĂN BẢN QUY PHẠM PHÁP LUẬT
+    text = re.sub(r"(?im)^\s*VĂN BẢN QUY PHẠM PHÁP LUẬT\s*\n?", "", text)
+    # 3. Remove (Tiếp theo Công báo...)
+    text = re.sub(r"(?im)^\s*\(?Tiếp theo Công báo[^\n]*\)?\s*\n?", "", text)
+    # 4. Remove CHỦ TỊCH NƯỚC - QUỐC HỘI header banners
+    text = re.sub(r"(?im)^\s*#+\s*(?:CHỦ TỊCH NƯỚC\s*-\s*QUỐC HỘI|QUỐC HỘI|CÔNG BÁO).*?\n", "", text)
+    # 5. Normalize multiple consecutive blank lines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
-def main():
+def load_llamaindex_processor():
+    """Load LlamaIndex / LlamaParse PDF processor configured to ignore headers/footers."""
+    llama_key = os.getenv("LLAMA_PARSE_API_KEY")
+    if llama_key:
+        try:
+            from llama_parse import LlamaParse
+            print("Khởi tạo bộ bóc tách tài liệu LlamaParse Cloud...")
+            parser = LlamaParse(
+                api_key=llama_key,
+                result_type="markdown",
+                language="vi",
+                verbose=True,
+                parsing_instruction=(
+                    "Ignore all page headers, page footers, running headers, and gazette metadata "
+                    "(such as 'CÔNG BÁO/Số...', 'VĂN BẢN QUY PHẠM PHÁP LUẬT', 'CHỦ TỊCH NƯỚC - QUỐC HỘI', "
+                    "'Tiếp theo Công báo số...'). Do not include them in the markdown output. "
+                    "Only extract the actual legal chapters, articles, clauses, and points."
+                ),
+            )
+
+            def process_pdf_cloud(pdf_path: Path) -> str:
+                print(f"Gửi tài liệu {pdf_path.name} đến LlamaParse Cloud (Bỏ qua Header/Footer)...")
+                documents = parser.load_data(str(pdf_path))
+                raw_text = "\n\n".join([doc.text for doc in documents])
+                cleaned = clean_legal_markdown(raw_text)
+                return cleaned
+
+            return process_pdf_cloud
+        except Exception as exc:
+            print(f"Cảnh báo LlamaParse: {exc}. Chuyển sang LlamaIndex PDFReader...")
+
+    # Fallback to local LlamaIndex PDFReader
     try:
-        process_pdf = load_marker_processor()
+        from llama_index.readers.file import PDFReader
+        print("Khởi tạo bộ đọc LlamaIndex PDFReader...")
+        reader = PDFReader()
+
+        def process_pdf_local(pdf_path: Path) -> str:
+            documents = reader.load_data(pdf_path)
+            raw_text = "\n\n".join([doc.text for doc in documents])
+            cleaned = clean_legal_markdown(raw_text)
+            return cleaned
+
+        return process_pdf_local
     except Exception as exc:
-        message = str(exc).strip()
-        print(f"Không thể khởi động Marker: {message}")
-        return
+        raise ImportError(f"Không thể khởi tạo LlamaIndex PDF Reader: {exc}")
 
+
+def process_all_pdfs():
+    """Process all PDFs in data/raw using LlamaIndex and save to data/processed."""
     pdf_files = sorted(RAW_DIR.glob("*.pdf"))
-
     if not pdf_files:
         print(f"Không tìm thấy file PDF nào trong {RAW_DIR}")
         return
 
+    print(f"Tìm thấy {len(pdf_files)} file PDF trong {RAW_DIR}")
+    try:
+        process_pdf = load_llamaindex_processor()
+    except Exception as exc:
+        print(f"Không thể khởi động LlamaIndex processor: {exc}")
+        return
+
     for pdf_path in pdf_files:
-        print(f"\nĐang xử lý bằng Marker: {pdf_path.name}")
+        output_path = PROCESSED_DIR / f"{pdf_path.stem}_llamaindex.md"
+        print(f"\n[LlamaIndex] Đang xử lý: {pdf_path.name}")
         try:
             text = process_pdf(pdf_path)
-
-            output_path = PROCESSED_DIR / f"{pdf_path.stem}_marker.md"
             output_path.write_text(text, encoding="utf-8")
-            print(f"Đã lưu kết quả tại: {output_path}")
-
+            print(f"-> Đã lưu kết quả tại: {output_path}")
         except Exception as exc:
-            message = str(exc).strip()
-            print(f"Lỗi khi xử lý {pdf_path.name}: {message}")
+            print(f"Lỗi khi xử lý {pdf_path.name}: {exc}")
 
-    print("\nHoàn tất xử lý!")
+    print("\nHoàn tất xử lý tài liệu bằng LlamaIndex!")
 
 
 if __name__ == "__main__":
-    main()
+    process_all_pdfs()

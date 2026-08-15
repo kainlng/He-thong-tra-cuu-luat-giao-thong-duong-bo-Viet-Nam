@@ -1,9 +1,8 @@
 import sys
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.cluster import KMeans
@@ -56,7 +55,6 @@ class VectorVisualizer:
             loc = meta.get("location", "")
             raw_text = meta.get("text", "")
             snippet = (raw_text[:140] + "...") if len(raw_text) > 140 else raw_text
-            # Format HTML hover text for Plotly
             clean_snippet = snippet.replace("\n", "<br>")
             ht = (
                 f"<b>{header}</b><br>"
@@ -110,10 +108,9 @@ class VectorVisualizer:
             if method == "PCA":
                 query_coords = self.pca_3d.transform(query_vector.reshape(1, -1))[0]
             else:
-                # For t-SNE, use nearest neighbor approximation in 3D
                 query_coords = coords[nearest_indices[0]] + np.array([0.05, 0.05, 0.05]) if nearest_indices else np.array([0, 0, 0])
 
-            # Add Query Node (Star)
+            # Add Query Node
             fig.add_trace(
                 go.Scatter3d(
                     x=[query_coords[0]],
@@ -155,16 +152,14 @@ class VectorVisualizer:
         title_method = "PCA (Principal Component Analysis)" if method == "PCA" else "t-SNE"
         fig.update_layout(
             title=dict(
-                text=f"🌌 <b>Bản đồ Không gian Vector 3D ({title_method})</b> - {self.n_samples} Điều luật",
+                text=f"🌌 <b>Bản đồ Không gian Vector 3D ({title_method})</b> - {self.n_samples} Điều luật (LlamaIndex)",
                 font=dict(size=18, color="#1E3A8A"),
             ),
             scene=dict(
                 xaxis=dict(title="Trục Dim 1", gridcolor="#E2E8F0", backgroundcolor="#F8FAFC"),
                 yaxis=dict(title="Trục Dim 2", gridcolor="#E2E8F0", backgroundcolor="#F8FAFC"),
                 zaxis=dict(title="Trục Dim 3", gridcolor="#E2E8F0", backgroundcolor="#F8FAFC"),
-                camera=dict(
-                    eye=dict(x=1.5, y=1.5, z=1.2)
-                ),
+                camera=dict(eye=dict(x=1.5, y=1.5, z=1.2)),
             ),
             margin=dict(l=0, r=0, b=0, t=50),
             legend=dict(
@@ -261,7 +256,7 @@ class VectorVisualizer:
         title_method = "PCA" if method == "PCA" else "t-SNE"
         fig.update_layout(
             title=dict(
-                text=f"🗺️ <b>Bản đồ Không gian Vector 2D ({title_method})</b> - {self.n_samples} Điều luật",
+                text=f"🗺️ <b>Bản đồ Không gian Vector 2D ({title_method})</b> - {self.n_samples} Điều luật (LlamaIndex)",
                 font=dict(size=18, color="#1E3A8A"),
             ),
             xaxis=dict(title="Trục Dim 1", gridcolor="#E2E8F0", zeroline=False),
@@ -319,7 +314,6 @@ class VectorVisualizer:
         vec = self.vectors[vector_index]
         meta = self.metadata[vector_index]
 
-        # Reshape 768 into 24 rows x 32 columns
         grid_24_32 = vec.reshape((24, 32))
 
         fig = go.Figure(
@@ -334,7 +328,7 @@ class VectorVisualizer:
         header = meta.get("header", f"Vector #{vector_index}")
         fig.update_layout(
             title=dict(
-                text=f"🧬 <b>Phổ nhiệt Trọng số 768 Chiều (Vector Embedding Heatmap)</b> - {header}",
+                text=f"🧬 <b>Phổ nhiệt Trọng số 768 Chiều (LlamaIndex Embedding)</b> - {header}",
                 font=dict(size=15, color="#1E3A8A"),
             ),
             xaxis=dict(title="Cột Chiều (0..31)", gridcolor="#E2E8F0"),

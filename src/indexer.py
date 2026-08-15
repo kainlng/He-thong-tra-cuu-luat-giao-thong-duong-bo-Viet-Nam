@@ -3,6 +3,8 @@ import re
 import sys
 import pickle
 from pathlib import Path
+from typing import List, Dict, Any, Optional
+
 from dotenv import load_dotenv
 
 # Load environment variables (.env)
@@ -12,7 +14,6 @@ if "HF_TOKEN" in os.environ and "HUGGING_FACE_HUB_TOKEN" not in os.environ:
 
 import numpy as np
 import faiss
-from sentence_transformers import SentenceTransformer
 
 # Ensure UTF-8 output encoding for Windows terminal
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -36,32 +37,80 @@ INDEX_PATH = VECTOR_DB_DIR / "faiss_index.bin"
 METADATA_PATH = VECTOR_DB_DIR / "metadata.pkl"
 
 
-class MultilingualE5Embedder:
-    """Embedding Generator using intfloat/multilingual-e5-base."""
+def clean_legal_markdown(text: str) -> str:
+    """Strip running gazette headers, footers, and redundant page titles from extracted markdown."""
+    # 1. Remove CÔNG BÁO running headers
+    text = re.sub(r"(?im)^\s*CÔNG BÁO/[^\n]*\n?", "", text)
+    # 2. Remove VĂN BẢN QUY PHẠM PHÁP LUẬT
+    text = re.sub(r"(?im)^\s*VĂN BẢN QUY PHẠM PHÁP LUẬT\s*\n?", "", text)
+    # 3. Remove (Tiếp theo Công báo...)
+    text = re.sub(r"(?im)^\s*\(?Tiếp theo Công báo[^\n]*\)?\s*\n?", "", text)
+    # 4. Remove CHỦ TỊCH NƯỚC - QUỐC HỘI header banners
+    text = re.sub(r"(?im)^\s*#+\s*(?:CHỦ TỊCH NƯỚC\s*-\s*QUỐC HỘI|QUỐC HỘI|CÔNG BÁO).*?\n", "", text)
+    # 5. Normalize multiple consecutive blank lines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+class LlamaIndexEmbedder:
+    """Embedding Generator using LlamaIndex HuggingFaceEmbedding abstraction (intfloat/multilingual-e5-base)."""
 
     def __init__(self, model_name: str = "intfloat/multilingual-e5-base"):
-        print(f"Loading E5 model: {model_name}...")
-        self.model = SentenceTransformer(model_name)
+        print(f"Loading LlamaIndex HuggingFaceEmbedding: {model_name}...")
+        try:
+            from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+            self.model = HuggingFaceEmbedding(
+                model_name=model_name,
+                query_instruction="query: ",
+                text_instruction="passage: ",
+                normalize=True,
+            )
+            self._use_llamaindex = True
+        except Exception as exc:
+            print(f"LlamaIndex embedding loading note ({exc}), falling back to SentenceTransformer...")
+            from sentence_transformers import SentenceTransformer
+            self.model = SentenceTransformer(model_name)
+            self._use_llamaindex = False
 
-    def get_document_embeddings(self, texts: list[str], batch_size: int = 16) -> np.ndarray:
-        """Embed document passages by prefixing with 'passage: '."""
-        passages = [f"passage: {t}" for t in texts]
-        embeddings = self.model.encode(
-            passages,
-            batch_size=batch_size,
-            show_progress_bar=True,
-            normalize_embeddings=True,
-        )
-        return np.array(embeddings, dtype=np.float32)
+    def get_document_embeddings(self, texts: List[str], batch_size: int = 16) -> np.ndarray:
+        """Embed document passages with L2 normalization."""
+        if self._use_llamaindex:
+            passages = [f"passage: {t}" for t in texts]
+            raw_embs = self.model.get_text_embedding_batch(passages, show_progress=True)
+            arr = np.array(raw_embs, dtype=np.float32)
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            return arr / norms
+        else:
+            passages = [f"passage: {t}" for t in texts]
+            embeddings = self.model.encode(
+                passages,
+                batch_size=batch_size,
+                show_progress_bar=True,
+                normalize_embeddings=True,
+            )
+            return np.array(embeddings, dtype=np.float32)
 
     def get_query_embedding(self, query: str) -> np.ndarray:
-        """Embed search query by prefixing with 'query: '."""
-        formatted_query = f"query: {query}"
-        embedding = self.model.encode(
-            [formatted_query],
-            normalize_embeddings=True,
-        )
-        return np.array(embedding, dtype=np.float32)
+        """Embed search query with L2 normalization."""
+        if self._use_llamaindex:
+            formatted_query = f"query: {query}"
+            raw_emb = self.model.get_query_embedding(formatted_query)
+            arr = np.array([raw_emb], dtype=np.float32)
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            return arr / norms
+        else:
+            formatted_query = f"query: {query}"
+            embedding = self.model.encode(
+                [formatted_query],
+                normalize_embeddings=True,
+            )
+            return np.array(embedding, dtype=np.float32)
+
+
+# Backward compatibility alias
+MultilingualE5Embedder = LlamaIndexEmbedder
 
 
 class FAISSVectorStore:
@@ -106,16 +155,20 @@ class FAISSVectorStore:
 
 def parse_legal_chunks(markdown_file: Path) -> list[dict]:
     """Split legal markdown file into structured article chunks with exact document position metadata."""
-    text = markdown_file.read_text(encoding="utf-8")
-    pattern = r"(Điều\s+\d+\.\s+[^\n]+)"
+    raw_text = markdown_file.read_text(encoding="utf-8")
+    text = clean_legal_markdown(raw_text)
+
+    pattern = r"(?:^|\n)#*\s*(Điều\s+\d+\.\s+[^\n]+)"
     parts = re.split(pattern, text)
 
     chunks = []
     chunk_index = 1
     if len(parts) > 1:
         for i in range(1, len(parts), 2):
-            header = parts[i].strip()
-            content = parts[i + 1].strip() if i + 1 < len(parts) else ""
+            raw_header = parts[i].strip()
+            header = re.sub(r"^#+\s*", "", raw_header).strip()
+            raw_content = parts[i + 1].strip() if i + 1 < len(parts) else ""
+            content = clean_legal_markdown(raw_content)
             full_chunk_text = f"{header}\n{content}"
             if len(full_chunk_text.strip()) > 20:
                 article_match = re.search(r"Điều\s+(\d+)", header)
@@ -161,12 +214,13 @@ def parse_legal_chunks(markdown_file: Path) -> list[dict]:
 
 
 def build_index():
-    md_files = list(PROCESSED_DIR.glob("*.md"))
+    """Build FAISS Vector Index and SQLite FTS5 BM25 Index from processed markdown documents."""
+    md_files = sorted(PROCESSED_DIR.glob("*.md"))
     if not md_files:
         print(f"No processed markdown files found in {PROCESSED_DIR}")
         return
 
-    print(f"Found {len(md_files)} markdown files in {PROCESSED_DIR}")
+    print(f"Indexing {len(md_files)} markdown files from {PROCESSED_DIR}")
     all_chunks = []
     for md in md_files:
         chunks = parse_legal_chunks(md)
@@ -185,11 +239,11 @@ def build_index():
     fts_store.reset_db()
     fts_store.add_documents(all_chunks)
 
-    # 2. Build & Save FAISS Dense Vector Index
-    embedder = MultilingualE5Embedder(model_name="intfloat/multilingual-e5-base")
+    # 2. Build & Save FAISS Dense Vector Index using LlamaIndex Embedder
+    embedder = LlamaIndexEmbedder(model_name="intfloat/multilingual-e5-base")
     sample_texts = [c["text"] for c in all_chunks]
 
-    print("\nGenerating embeddings with intfloat/multilingual-e5-base...")
+    print("\nGenerating embeddings with LlamaIndex HuggingFaceEmbedding (intfloat/multilingual-e5-base)...")
     embeddings = embedder.get_document_embeddings(sample_texts, batch_size=16)
     print(f"Embeddings shape: {embeddings.shape}")
 

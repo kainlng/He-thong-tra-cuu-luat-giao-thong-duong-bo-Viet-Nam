@@ -21,10 +21,9 @@ FTS_DB_PATH = VECTOR_DB_DIR / "legal_fts.db"
 
 def inspect_vector_store():
     print("=" * 60)
-    print("🔍 KIỂM TRA CẤU TRÚC VECTOR DATABASE (FAISS + SQLITE FTS5)")
+    print("🔍 KIỂM TRA CẤU TRÚC VECTOR DATABASE (LlamaIndex + FAISS + FTS5)")
     print("=" * 60)
 
-    # 1. Inspect FAISS Dense Vectors
     if not INDEX_PATH.exists() or not METADATA_PATH.exists():
         print(f"❌ Không tìm thấy file index tại {VECTOR_DB_DIR}")
         return
@@ -35,13 +34,13 @@ def inspect_vector_store():
 
     print("\n📦 1. FAISS DENSE VECTOR STORE (faiss_index.bin & metadata.pkl)")
     print(f" - Tổng số vector (ntotal)    : {index.ntotal}")
-    print(f" - Số chiều vector (dimension): {index.d} (intfloat/multilingual-e5-base)")
+    print(f" - Số chiều vector (dimension): {index.d} (LlamaIndex intfloat/multilingual-e5-base)")
     print(f" - Loại Index FAISS           : {type(index).__name__} (Inner Product / Cosine)")
     print(f" - Tổng số bản ghi metadata   : {len(metadata)}")
 
     # Display First 2 Vectors with their metadata
     print("\n" + "-" * 60)
-    print("📋 CHI TIẾT VECTOR MẪU ĐƯỢC LƯU TRỮ TRONG DATABASE:")
+    print("📋 CHI TIẾT VECTOR MẪU ĐƯỢC LƯU TRỮ:")
     print("-" * 60)
 
     for i in range(min(2, index.ntotal)):

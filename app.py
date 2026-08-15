@@ -49,16 +49,6 @@ st.markdown(
         padding: 1rem;
         margin-bottom: 1rem;
     }
-    .metric-badge {
-        display: inline-block;
-        background-color: #EEF2FF;
-        color: #3730A3;
-        padding: 0.25rem 0.6rem;
-        border-radius: 9999px;
-        font-weight: 600;
-        font-size: 0.85rem;
-        margin-right: 0.5rem;
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -66,10 +56,10 @@ st.markdown(
 
 # Header Section
 st.markdown('<div class="main-title">🚦 Hệ thống Tra cứu & Khám phá Vector Database Luật Giao thông</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Trực quan hóa Không gian Vector 768 Chiều • FAISS Dense Search • SQLite FTS5 BM25 • Qwen 2.5 72B</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Trực quan hóa Không gian Vector 768 Chiều (LlamaIndex) • FAISS Dense Search • SQLite FTS5 BM25 • Qwen 2.5 72B</div>', unsafe_allow_html=True)
 
 # Initialize Legal RAG Agent once in session_state
-@st.cache_resource(show_spinner="Đang khởi tạo Trợ lý AI, FAISS và SQLite FTS5...")
+@st.cache_resource(show_spinner="Đang khởi tạo Trợ lý AI, LlamaIndex Embeddings, FAISS và SQLite FTS5...")
 def get_agent():
     return LegalRAGAgent()
 
@@ -107,7 +97,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### ℹ️ Thông tin Mô hình")
-    st.markdown("- **Embedding**: `intfloat/multilingual-e5-base`")
+    st.markdown("- **Embedding**: `LlamaIndex HuggingFaceEmbedding` (`intfloat/multilingual-e5-base`)")
     st.markdown("- **Hybrid Search**: `FAISS (Dense)` + `FTS5 (BM25)`")
     st.markdown("- **Verification**: `FTS5 Citation Audit`")
     st.markdown("- **LLM**: `Qwen/Qwen2.5-72B-Instruct`")
@@ -234,7 +224,7 @@ with tab_chat:
 with tab_vector_map:
     st.markdown("### 🌌 Bản đồ Không gian Ngữ nghĩa Vector 2D / 3D")
     st.markdown(
-        "Mỗi điểm trên đồ thị biểu diễn một **Điều luật (đã được số hóa thành vector 768 chiều)**. "
+        "Mỗi điểm trên đồ thị biểu diễn một **Điều luật (đã được số hóa thành vector 768 chiều bằng LlamaIndex Embeddings)**. "
         "Các Điều luật có ngữ nghĩa gần nhau sẽ tự động hội tụ thành các cụm màu tương ứng."
     )
 
@@ -294,13 +284,13 @@ with tab_matrix:
     st.markdown("### 🔬 Phân tích Chi tiết Vector & Ma trận Tương quan")
 
     st.markdown("#### 🔥 1. Ma trận Tương đồng Cosine giữa các Điều luật (Cosine Similarity)")
-    st.markdown("Màu càng sáng (vàng) thể hiện 2 Điều luật có nội dung càng tương đồng với nhau.")
+    st.markdown("Màu càng sáng thể hiện 2 Điều luật có nội dung càng tương đồng với nhau.")
     max_heatmap_items = st.slider("Số lượng Điều luật hiển thị trên ma trận:", min_value=10, max_value=50, value=25)
     fig_sim = visualizer.plot_similarity_heatmap(max_items=max_heatmap_items)
     st.plotly_chart(fig_sim, use_container_width=True)
 
     st.markdown("---")
-    st.markdown("#### 🧬 2. Phổ nhiệt Trọng số 768 Chiều của từng Vector (Vector Weight Spectrum)")
+    st.markdown("#### 🧬 2. Phổ nhiệt Trọng số 768 Chiều của từng Vector (LlamaIndex Embedding Spectrum)")
     st.markdown("Mỗi vector 768 chiều được trải thành ma trận $24 \\times 32$ để quan sát phổ phân bố số thực float32.")
     
     selected_idx = st.selectbox(

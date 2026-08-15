@@ -12,7 +12,7 @@ if str(BASE_DIR) not in sys.path:
 
 from dotenv import load_dotenv
 from huggingface_hub import InferenceClient
-from src.indexer import MultilingualE5Embedder, FAISSVectorStore, INDEX_PATH, METADATA_PATH
+from src.indexer import LlamaIndexEmbedder, FAISSVectorStore, INDEX_PATH, METADATA_PATH
 from src.fts_store import SQLiteFTSStore, FTS_DB_PATH
 
 # Ensure UTF-8 output encoding for Windows terminal
@@ -45,10 +45,10 @@ YÊU CẦU NGHIÊM NGẶT:
 
 
 class LegalRAGAgent:
-    """Hybrid RAG Agent combining FAISS Dense Search + SQLite FTS5 BM25 with LLM Verification & Fallback."""
+    """Hybrid RAG Agent combining LlamaIndex Embeddings + FAISS Dense Search + SQLite FTS5 BM25."""
 
     def __init__(self, model_name: str = "Qwen/Qwen2.5-72B-Instruct"):
-        print("Initializing Legal RAG Agent...")
+        print("Initializing Legal RAG Agent with LlamaIndex...")
         self.hf_token = os.getenv("HF_TOKEN")
         if not self.hf_token:
             raise ValueError("HF_TOKEN not found in environment variables (.env)")
@@ -57,8 +57,8 @@ class LegalRAGAgent:
         self.client = InferenceClient(api_key=self.hf_token)
         self.model_name = model_name
 
-        print("Loading Multilingual E5 Embedding Model...")
-        self.embedder = MultilingualE5Embedder(model_name="intfloat/multilingual-e5-base")
+        print("Loading LlamaIndex HuggingFaceEmbedding Model...")
+        self.embedder = LlamaIndexEmbedder(model_name="intfloat/multilingual-e5-base")
 
         print("Loading FAISS Vector Database...")
         if not INDEX_PATH.exists() or not METADATA_PATH.exists():
@@ -73,7 +73,7 @@ class LegalRAGAgent:
                 f"SQLite FTS5 database not found in {FTS_DB_PATH.parent}. Please run 'python src/indexer.py' first."
             )
         self.fts_store = SQLiteFTSStore(FTS_DB_PATH)
-        print("Hybrid Indexing Engine initialized successfully.")
+        print("Hybrid Indexing Engine with LlamaIndex initialized successfully.")
 
     def hybrid_retrieve(self, query: str, top_k: int = 3, rrf_k: int = 60) -> List[Dict[str, Any]]:
         """Retrieve documents using Reciprocal Rank Fusion (RRF) combining FAISS Dense & SQLite FTS5 BM25."""
@@ -130,11 +130,9 @@ class LegalRAGAgent:
         verified_articles = []
 
         for art in cited_articles:
-            # First check if cited in retrieved context chunks
             if art in context_articles:
                 verified_articles.append(art)
             else:
-                # Double-check against full FTS5 database
                 if self.fts_store.verify_citation(art):
                     verified_articles.append(art)
                 else:
