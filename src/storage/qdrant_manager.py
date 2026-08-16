@@ -18,7 +18,7 @@ except ImportError:
     QdrantClient = None
     rest_models = None
 
-from src.config import (
+from src.core.config import (
     QDRANT_URL,
     QDRANT_API_KEY,
     QDRANT_COLLECTION_NAME,

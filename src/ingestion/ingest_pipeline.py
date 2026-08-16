@@ -2,16 +2,16 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from src.config import PROCESSED_DIR, RAW_DIR
-from src.legal_parser import HierarchicalLegalParser, calculate_file_hash
-from src.hierarchical_chunker import HierarchicalLegalChunker
-from src.postgres_manager import PostgresManager
-from src.qdrant_manager import QdrantManager
-from src.indexer import LlamaIndexEmbedder
+from src.core.config import PROCESSED_DIR, RAW_DIR
+from src.ingestion.legal_parser import HierarchicalLegalParser, calculate_file_hash
+from src.ingestion.hierarchical_chunker import HierarchicalLegalChunker
+from src.storage.postgres_manager import PostgresManager
+from src.storage.qdrant_manager import QdrantManager
+from src.storage.indexer import LlamaIndexEmbedder
 
 
 def run_ingestion(force_reindex: bool = False):
@@ -37,7 +37,7 @@ def run_ingestion(force_reindex: bool = False):
     md_files = sorted(PROCESSED_DIR.glob("*.md"))
     if not md_files:
         print(f"[Ingest Warning] Không tìm thấy file markdown nào trong {PROCESSED_DIR}.")
-        print("Vui lòng chạy 'python src/data_loader.py' trước để trích xuất PDF sang Markdown.")
+        print("Vui lòng chạy 'python src/ingestion/data_loader.py' trước để trích xuất PDF sang Markdown.")
         return
 
     total_chunks_indexed = 0

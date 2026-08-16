@@ -6,15 +6,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from src.legal_parser import HierarchicalLegalParser
-from src.hierarchical_chunker import HierarchicalLegalChunker
-from src.postgres_manager import PostgresManager
-from src.qdrant_manager import QdrantManager
-from src.indexer import LlamaIndexEmbedder
-from src.context_expander import HierarchicalContextExpander
-from src.reranker import LegalReranker
-from src.query_engine import LegalQueryEngine
-from src.citation_builder import CitationBuilder
+from src.ingestion.legal_parser import HierarchicalLegalParser
+from src.ingestion.hierarchical_chunker import HierarchicalLegalChunker
+from src.storage.postgres_manager import PostgresManager
+from src.storage.qdrant_manager import QdrantManager
+from src.storage.indexer import LlamaIndexEmbedder
+from src.retrieval.context_expander import HierarchicalContextExpander
+from src.retrieval.reranker import LegalReranker
+from src.retrieval.query_engine import LegalQueryEngine
+from src.generation.citation_builder import CitationBuilder
 
 
 SAMPLE_LEGAL_MARKDOWN = """

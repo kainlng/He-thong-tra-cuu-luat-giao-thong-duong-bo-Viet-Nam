@@ -13,8 +13,8 @@ BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from src.postgres_manager import PostgresManager
-from src.qdrant_manager import QdrantManager
+from src.storage.postgres_manager import PostgresManager
+from src.storage.qdrant_manager import QdrantManager
 
 
 def inspect_databases():

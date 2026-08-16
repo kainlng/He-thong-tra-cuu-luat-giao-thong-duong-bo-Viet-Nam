@@ -14,8 +14,8 @@ from sqlalchemy import create_engine, text, func
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import OperationalError
 
-from src.config import POSTGRES_URL
-from src.models import (
+from src.core.config import POSTGRES_URL, VECTOR_DB_DIR
+from src.core.models import (
     Base,
     LegalDocumentORM,
     LegalVersionORM,
@@ -52,7 +52,6 @@ class PostgresManager:
             print(f"[PostgreSQL] Kết nối thành công tới Database: {self.db_url.split('@')[-1]}")
         except Exception as exc:
             print(f"[PostgreSQL Cảnh báo] Không thể kết nối tới PostgreSQL ({exc}). Đang chuyển sang SQLite Local...")
-            from src.config import VECTOR_DB_DIR
             sqlite_path = VECTOR_DB_DIR / "legal_relational_fallback.db"
             self.db_url = f"sqlite:///{sqlite_path}"
             self.engine = create_engine(self.db_url, echo=False)

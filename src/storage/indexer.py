@@ -5,11 +5,6 @@ from typing import List, Optional
 import numpy as np
 from dotenv import load_dotenv
 
-# Load environment variables (.env)
-load_dotenv()
-if "HF_TOKEN" in os.environ and "HUGGING_FACE_HUB_TOKEN" not in os.environ:
-    os.environ["HUGGING_FACE_HUB_TOKEN"] = os.environ["HF_TOKEN"]
-
 # Ensure UTF-8 output encoding for Windows terminal
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     try:
@@ -17,11 +12,17 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+# Add project root directory to sys.path
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from src.config import EMBEDDING_MODEL_NAME
+# Load environment variables (.env)
+load_dotenv(BASE_DIR / ".env")
+if "HF_TOKEN" in os.environ and "HUGGING_FACE_HUB_TOKEN" not in os.environ:
+    os.environ["HUGGING_FACE_HUB_TOKEN"] = os.environ["HF_TOKEN"]
+
+from src.core.config import EMBEDDING_MODEL_NAME
 
 
 class LlamaIndexEmbedder:

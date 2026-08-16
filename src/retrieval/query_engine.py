@@ -2,12 +2,12 @@ import re
 from datetime import datetime, date
 from typing import List, Dict, Any, Optional
 
-from src.indexer import LlamaIndexEmbedder
-from src.qdrant_manager import QdrantManager
-from src.postgres_manager import PostgresManager
-from src.context_expander import HierarchicalContextExpander
-from src.reranker import LegalReranker
-from src.config import RETRIEVAL_TOP_K, RERANKER_TOP_N
+from src.storage.indexer import LlamaIndexEmbedder
+from src.storage.qdrant_manager import QdrantManager
+from src.storage.postgres_manager import PostgresManager
+from src.retrieval.context_expander import HierarchicalContextExpander
+from src.retrieval.reranker import LegalReranker
+from src.core.config import RETRIEVAL_TOP_K, RERANKER_TOP_N
 
 
 class LegalQueryEngine:

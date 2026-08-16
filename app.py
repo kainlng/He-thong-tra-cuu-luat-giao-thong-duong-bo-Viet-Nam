@@ -12,10 +12,10 @@ if str(BASE_DIR) not in sys.path:
 import numpy as np
 import streamlit as st
 
-from src.agent import LegalRAGAgent
-from src.postgres_manager import PostgresManager
-from src.qdrant_manager import QdrantManager
-from src.vector_visualizer import VectorVisualizer
+from src.generation.agent import LegalRAGAgent
+from src.storage.postgres_manager import PostgresManager
+from src.storage.qdrant_manager import QdrantManager
+from src.visualization.vector_visualizer import VectorVisualizer
 
 # ==============================================================================
 # 1. STREAMLIT PAGE CONFIGURATION

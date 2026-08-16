@@ -9,19 +9,12 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-try:
-    from dotenv import load_dotenv
-except ModuleNotFoundError:
-    def load_dotenv():
-        return False
+# Add project root directory to sys.path
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 
-load_dotenv()
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-RAW_DIR = BASE_DIR / "data" / "raw"
-PROCESSED_DIR = BASE_DIR / "data" / "processed"
-
-PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+from src.core.config import RAW_DIR, PROCESSED_DIR, LLAMA_PARSE_API_KEY
 
 
 def clean_legal_markdown(text: str) -> str:
@@ -41,7 +34,7 @@ def clean_legal_markdown(text: str) -> str:
 
 def load_llamaindex_processor():
     """Load LlamaIndex / LlamaParse PDF processor configured to ignore headers/footers."""
-    llama_key = os.getenv("LLAMA_PARSE_API_KEY")
+    llama_key = LLAMA_PARSE_API_KEY or os.getenv("LLAMA_PARSE_API_KEY")
     if llama_key:
         try:
             from llama_parse import LlamaParse

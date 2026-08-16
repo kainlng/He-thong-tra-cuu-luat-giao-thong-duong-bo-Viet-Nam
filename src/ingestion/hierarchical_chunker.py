@@ -1,7 +1,7 @@
 import re
 import unicodedata
 from typing import List, Dict, Any, Optional, Tuple
-from src.models import LegalChunkDTO, DocumentMetadata, ValidityMetadata, SourceMetadata, QdrantChunkPayload
+from src.core.models import LegalChunkDTO, DocumentMetadata, ValidityMetadata, SourceMetadata, QdrantChunkPayload
 
 
 def remove_vietnamese_accents(text: str) -> str:

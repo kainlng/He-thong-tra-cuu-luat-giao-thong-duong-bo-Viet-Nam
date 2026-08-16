@@ -2,8 +2,8 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Base paths
-BASE_DIR = Path(__file__).resolve().parent.parent
+# Base paths (project root is 3 levels up: src/core/config.py -> core -> src -> root)
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = BASE_DIR / "data"
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"

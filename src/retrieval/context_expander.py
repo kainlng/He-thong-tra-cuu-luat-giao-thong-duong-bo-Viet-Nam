@@ -1,5 +1,5 @@
 from typing import List, Dict, Any
-from src.postgres_manager import PostgresManager
+from src.storage.postgres_manager import PostgresManager
 
 
 class HierarchicalContextExpander:
@@ -22,7 +22,6 @@ class HierarchicalContextExpander:
         score_map = {c["chunk_id"]: c.get("score", 0.0) for c in qdrant_candidates}
 
         expanded_passages = []
-        seen_articles = set()
 
         for ctx in rich_contexts:
             chunk_id = ctx["chunk_id"]

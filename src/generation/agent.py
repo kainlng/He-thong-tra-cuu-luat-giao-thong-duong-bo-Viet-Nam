@@ -4,20 +4,20 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from dotenv import load_dotenv
 from huggingface_hub import InferenceClient
 
-from src.config import HF_TOKEN, LLM_MODEL_NAME
-from src.indexer import LlamaIndexEmbedder
-from src.postgres_manager import PostgresManager
-from src.qdrant_manager import QdrantManager
-from src.reranker import LegalReranker
-from src.query_engine import LegalQueryEngine
-from src.citation_builder import CitationBuilder
+from src.core.config import HF_TOKEN, LLM_MODEL_NAME
+from src.storage.indexer import LlamaIndexEmbedder
+from src.storage.postgres_manager import PostgresManager
+from src.storage.qdrant_manager import QdrantManager
+from src.retrieval.reranker import LegalReranker
+from src.retrieval.query_engine import LegalQueryEngine
+from src.generation.citation_builder import CitationBuilder
 
 # Ensure UTF-8 output encoding for Windows terminal
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -26,7 +26,7 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-load_dotenv()
+load_dotenv(BASE_DIR / ".env")
 
 SYSTEM_PROMPT = """Bạn là Trợ lý AI chuyên nghiệp về Pháp luật Giao thông đường bộ Việt Nam (Luật Trật tự, an toàn giao thông đường bộ 2024 và các Nghị định liên quan).
 Nhiệm vụ của bạn là giải đáp câu hỏi của người dùng một cách chính xác, rõ ràng và minh bạch dựa TRỰC TIẾP trên các CĂN CỨ PHÁP LÝ được cung cấp.
