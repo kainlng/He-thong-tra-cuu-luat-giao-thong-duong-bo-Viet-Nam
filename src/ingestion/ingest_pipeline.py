@@ -19,7 +19,7 @@ def run_ingestion(force_reindex: bool = False):
     PDF/Markdown -> Parser Cấu trúc Cây -> Hierarchical Chunker -> Embedder -> PostgreSQL -> Qdrant.
     """
     print("=" * 70)
-    print("🚀 KHỞI ĐỘNG PIPELINE INGESTION PHÁP LUẬT PHÂN CẤP (PostgreSQL + Qdrant)")
+    print("KHỞI ĐỘNG PIPELINE INGESTION PHÁP LUẬT PHÂN CẤP (PostgreSQL + Qdrant)")
     print("=" * 70)
 
     # 1. Khởi tạo Managers
@@ -43,11 +43,11 @@ def run_ingestion(force_reindex: bool = False):
     total_chunks_indexed = 0
 
     for md_file in md_files:
-        print(f"\n📂 Đang xử lý tài liệu: {md_file.name}...")
+        print(f"\nĐang xử lý tài liệu: {md_file.name}...")
         file_hash = calculate_file_hash(md_file)
 
         if not force_reindex and pg_mgr.check_document_exists_by_hash(file_hash):
-            print(f"⏩ Tài liệu {md_file.name} (hash: {file_hash[:12]}...) đã tồn tại trong PostgreSQL. Bỏ qua.")
+            print(f"Tài liệu {md_file.name} (hash: {file_hash[:12]}...) đã tồn tại trong PostgreSQL. Bỏ qua.")
             continue
 
         raw_content = md_file.read_text(encoding="utf-8")
