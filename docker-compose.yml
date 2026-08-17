@@ -1,14 +1,58 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: legal_postgres_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-legal_traffic_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-111206}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d legal_traffic_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    container_name: legal_qdrant_db
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:6333/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   legal-rag-app:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: he_thong_tra_cuu_luat_giao_thong
+    restart: unless-stopped
     ports:
       - "8501:8501"
     env_file:
       - .env
     volumes:
+      - ./app.py:/app/app.py
+      - ./src:/app/src
       - ./vector_db:/app/vector_db
       - ./data:/app/data
-    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  qdrant_data:
