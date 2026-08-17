@@ -3,6 +3,9 @@ import sys
 import re
 from pathlib import Path
 
+from rich import print
+
+# Ensure UTF-8 stdout encoding for Windows
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -14,59 +17,117 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from src.core.config import RAW_DIR, PROCESSED_DIR, LLAMA_PARSE_API_KEY
+from src.core.config import RAW_DIR, PROCESSED_DIR, LLAMA_CLOUD_API_KEY
 
 
 def clean_legal_markdown(text: str) -> str:
-    """Strip running gazette headers, footers, and redundant page titles from extracted markdown."""
-    # 1. Remove CÔNG BÁO running headers
-    text = re.sub(r"(?im)^\s*CÔNG BÁO/[^\n]*\n?", "", text)
-    # 2. Remove VĂN BẢN QUY PHẠM PHÁP LUẬT
-    text = re.sub(r"(?im)^\s*VĂN BẢN QUY PHẠM PHÁP LUẬT\s*\n?", "", text)
-    # 3. Remove (Tiếp theo Công báo...)
-    text = re.sub(r"(?im)^\s*\(?Tiếp theo Công báo[^\n]*\)?\s*\n?", "", text)
-    # 4. Remove CHỦ TỊCH NƯỚC - QUỐC HỘI header banners
-    text = re.sub(r"(?im)^\s*#+\s*(?:CHỦ TỊCH NƯỚC\s*-\s*QUỐC HỘI|QUỐC HỘI|CÔNG BÁO).*?\n", "", text)
-    # 5. Normalize multiple consecutive blank lines
-    text = re.sub(r"\n{3,}", "\n\n", text)
+    """
+    Clean extracted Vietnamese legal gazette markdown.
+    Removes:
+    - CÔNG BÁO running headers
+    - page numbers attached to CÔNG BÁO headers
+    - VĂN BẢN QUY PHẠM PHÁP LUẬT
+    - 'Tiếp theo Công báo...' lines
+    - redundant QUỐC HỘI / CHỦ TỊCH NƯỚC banners
+    - markdown fences
+    - excessive blank lines
+    """
+
+    # 1. Remove markdown fences
+    text = re.sub(
+        r"(?im)^\s*```(?:markdown)?\s*$",
+        "",
+        text
+    )
+
+    # 2. Remove CÔNG BÁO header
+    text = re.sub(
+        r"(?im)^\s*CÔNG BÁO\s*/[^\n]*\n?",
+        "",
+        text
+    )
+
+    # 3. Remove page number immediately before CÔNG BÁO header
+    text = re.sub(
+        r"(?im)^\s*\d+\s*\n(?=\s*CÔNG BÁO\s*/)",
+        "",
+        text
+    )
+
+    # 4. Remove page number + CÔNG BÁO when extracted on the same line
+    text = re.sub(
+        r"(?im)^\s*\d+\s+CÔNG BÁO\s*/[^\n]*\n?",
+        "",
+        text
+    )
+
+    # 5. Remove VĂN BẢN QUY PHẠM PHÁP LUẬT
+    text = re.sub(
+        r"(?im)^\s*VĂN BẢN QUY PHẠM PHÁP LUẬT\s*\n?",
+        "",
+        text
+    )
+
+    # 6. Remove "(Tiếp theo Công báo...)"
+    text = re.sub(
+        r"(?im)^\s*\(?Tiếp theo Công báo[^\n]*\)?\s*\n?",
+        "",
+        text
+    )
+
+    # 7. Remove QUỐC HỘI / CHỦ TỊCH NƯỚC banners
+    text = re.sub(
+        r"(?im)^\s*#+\s*(?:CHỦ TỊCH NƯỚC\s*-\s*QUỐC HỘI|QUỐC HỘI|CÔNG BÁO).*?\n",
+        "",
+        text
+    )
+
+    # 8. Normalize excessive blank lines
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text
+    )
+
     return text.strip()
 
 
-def load_llamaindex_processor():
-    """Load LlamaIndex / LlamaParse PDF processor configured to ignore headers/footers."""
-    llama_key = LLAMA_PARSE_API_KEY or os.getenv("LLAMA_PARSE_API_KEY")
+def load_llamacloud_processor():
+    """Load LlamaCloud processor using the official LlamaCloud SDK."""
+    llama_key = LLAMA_CLOUD_API_KEY or os.getenv("LLAMA_CLOUD_API_KEY") or os.getenv("LLAMA_PARSE_API_KEY")
     if llama_key:
         try:
-            from llama_parse import LlamaParse
-            print("Khởi tạo bộ bóc tách tài liệu LlamaParse Cloud...")
-            parser = LlamaParse(
-                api_key=llama_key,
-                result_type="markdown",
-                language="vi",
-                verbose=True,
-                parsing_instruction=(
-                    "Ignore all page headers, page footers, running headers, and gazette metadata "
-                    "(such as 'CÔNG BÁO/Số...', 'VĂN BẢN QUY PHẠM PHÁP LUẬT', 'CHỦ TỊCH NƯỚC - QUỐC HỘI', "
-                    "'Tiếp theo Công báo số...'). Do not include them in the markdown output. "
-                    "Only extract the actual legal chapters, articles, clauses, and points."
-                ),
-            )
+            from llama_cloud import LlamaCloud
+            print("Khởi tạo LlamaCloud client (SDK chính thức)...")
+            client = LlamaCloud(api_key=llama_key)
 
             def process_pdf_cloud(pdf_path: Path) -> str:
-                print(f"Gửi tài liệu {pdf_path.name} đến LlamaParse Cloud (Bỏ qua Header/Footer)...")
-                documents = parser.load_data(str(pdf_path))
-                raw_text = "\n\n".join([doc.text for doc in documents])
-                cleaned = clean_legal_markdown(raw_text)
-                return cleaned
+                print(f"-> [LlamaCloud] Tải lên tập tin {pdf_path.name} (purpose='parse')...")
+                file_obj = client.files.create(file=pdf_path, purpose="parse")
+                print(f"-> [LlamaCloud] Đã tạo file_id: {file_obj.id}. Đang phân tích (tier='agentic', version='latest')...")
+                
+                result = client.parsing.parse(
+                    file_id=file_obj.id,
+                    tier="agentic",
+                    version="latest",
+                    expand=["markdown"],
+                )
+                
+                pages = result.markdown.pages if (result.markdown and result.markdown.pages) else []
+                print(f"-> [LlamaCloud] Hoàn tất bóc tách {len(pages)} trang từ {pdf_path.name}.")
+                
+                raw_text = "\n\n".join([p.markdown for p in pages if p.markdown])
+                cleaned_text = clean_legal_markdown(raw_text)
+                return cleaned_text
 
             return process_pdf_cloud
         except Exception as exc:
-            print(f"Cảnh báo LlamaParse: {exc}. Chuyển sang LlamaIndex PDFReader...")
+            print(f"Cảnh báo LlamaCloud SDK: {exc}. Chuyển sang chế độ local fallback...")
 
-    # Fallback to local LlamaIndex PDFReader
+    # Fallback to local PDFReader
     try:
         from llama_index.readers.file import PDFReader
-        print("Khởi tạo bộ đọc LlamaIndex PDFReader...")
+        print("Khởi tạo bộ đọc LlamaIndex PDFReader (Local Fallback)...")
         reader = PDFReader()
 
         def process_pdf_local(pdf_path: Path) -> str:
@@ -77,11 +138,11 @@ def load_llamaindex_processor():
 
         return process_pdf_local
     except Exception as exc:
-        raise ImportError(f"Không thể khởi tạo LlamaIndex PDF Reader: {exc}")
+        raise ImportError(f"Không thể khởi tạo Llama Cloud PDF Reader: {exc}")
 
 
 def process_all_pdfs():
-    """Process all PDFs in data/raw using LlamaIndex and save to data/processed."""
+    """Process all PDFs in data/raw using Llama Cloud and save as *_llamacloud.md in data/processed."""
     pdf_files = sorted(RAW_DIR.glob("*.pdf"))
     if not pdf_files:
         print(f"Không tìm thấy file PDF nào trong {RAW_DIR}")
@@ -89,14 +150,14 @@ def process_all_pdfs():
 
     print(f"Tìm thấy {len(pdf_files)} file PDF trong {RAW_DIR}")
     try:
-        process_pdf = load_llamaindex_processor()
+        process_pdf = load_llamacloud_processor()
     except Exception as exc:
-        print(f"Không thể khởi động LlamaIndex processor: {exc}")
+        print(f"Không thể khởi động Llama Cloud processor: {exc}")
         return
 
     for pdf_path in pdf_files:
-        output_path = PROCESSED_DIR / f"{pdf_path.stem}_llamaindex.md"
-        print(f"\n[LlamaIndex] Đang xử lý: {pdf_path.name}")
+        output_path = PROCESSED_DIR / f"{pdf_path.stem}_llamacloud.md"
+        print(f"\n[Llama Cloud Ingestion] Đang xử lý: {pdf_path.name}")
         try:
             text = process_pdf(pdf_path)
             output_path.write_text(text, encoding="utf-8")
@@ -104,7 +165,7 @@ def process_all_pdfs():
         except Exception as exc:
             print(f"Lỗi khi xử lý {pdf_path.name}: {exc}")
 
-    print("\nHoàn tất xử lý tài liệu bằng LlamaIndex!")
+    print("\nHoàn tất bóc tách toàn bộ tài liệu.")
 
 
 if __name__ == "__main__":

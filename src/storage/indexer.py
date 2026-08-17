@@ -26,7 +26,7 @@ from src.core.config import EMBEDDING_MODEL_NAME
 
 
 class LlamaIndexEmbedder:
-    """Embedding Generator using LlamaIndex HuggingFaceEmbedding abstraction (intfloat/multilingual-e5-base)."""
+    """Embedding Generator using LlamaIndex HuggingFaceEmbedding abstraction."""
 
     def __init__(self, model_name: str = EMBEDDING_MODEL_NAME):
         print(f"Loading LlamaIndex HuggingFaceEmbedding: {model_name}...")

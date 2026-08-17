@@ -21,7 +21,8 @@ HF_TOKEN = os.getenv("HF_TOKEN", "")
 if HF_TOKEN and "HUGGING_FACE_HUB_TOKEN" not in os.environ:
     os.environ["HUGGING_FACE_HUB_TOKEN"] = HF_TOKEN
 
-LLAMA_PARSE_API_KEY = os.getenv("LLAMA_PARSE_API_KEY", "")
+LLAMA_CLOUD_API_KEY = os.getenv("LLAMA_CLOUD_API_KEY") or os.getenv("LLAMA_PARSE_API_KEY") or ""
+LLAMA_PARSE_API_KEY = LLAMA_CLOUD_API_KEY
 QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
 OPEN_AI_API_KEY = os.getenv("OPEN_AI_API_KEY", "")
 

@@ -7,6 +7,7 @@ from src.core.config import (
     PROCESSED_DIR,
     VECTOR_DB_DIR,
     HF_TOKEN,
+    LLAMA_CLOUD_API_KEY,
     LLAMA_PARSE_API_KEY,
     QWEN_API_KEY,
     OPEN_AI_API_KEY,
