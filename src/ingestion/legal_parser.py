@@ -3,20 +3,7 @@ import hashlib
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
-
-def clean_legal_markdown(text: str) -> str:
-    """Loại bỏ tiêu đề trang, công báo, và chuẩn hóa khoảng trắng trong văn bản luật."""
-    # 1. Loại bỏ dòng CÔNG BÁO
-    text = re.sub(r"(?im)^\s*CÔNG BÁO/[^\n]*\n?", "", text)
-    # 2. Loại bỏ VĂN BẢN QUY PHẠM PHÁP LUẬT
-    text = re.sub(r"(?im)^\s*VĂN BẢN QUY PHẠM PHÁP LUẬT\s*\n?", "", text)
-    # 3. Loại bỏ (Tiếp theo Công báo...)
-    text = re.sub(r"(?im)^\s*\(?Tiếp theo Công báo[^\n]*\)?\s*\n?", "", text)
-    # 4. Loại bỏ banner CHỦ TỊCH NƯỚC - QUỐC HỘI
-    text = re.sub(r"(?im)^\s*#+\s*(?:CHỦ TỊCH NƯỚC\s*-\s*QUỐC HỘI|QUỐC HỘI|CÔNG BÁO).*?\n", "", text)
-    # 5. Chuẩn hóa nhiều dòng trắng liên tiếp thành 2 dòng
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+from src.ingestion.data_loader import clean_legal_markdown
 
 
 def calculate_file_hash(file_path: Path) -> str:
