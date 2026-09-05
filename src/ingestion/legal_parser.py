@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
 from src.ingestion.data_loader import clean_legal_markdown
+from src.core.legal_rules import LEGAL_AGENCIES_CONFIG, DEFAULT_AGENCY
 
 
 def calculate_file_hash(file_path: Path) -> str:
@@ -45,17 +46,73 @@ class HierarchicalLegalParser:
             re.IGNORECASE,
         )
 
+    def extract_issuing_agency(self, doc_num: str, text: str, file_name: str) -> Tuple[Dict[str, str], str]:
+        """Tự động xác định cơ quan ban hành và loại văn bản dựa trên file cấu hình LEGAL_AGENCIES_CONFIG."""
+        doc_num_upper = doc_num.upper()
+        file_name_lower = file_name.lower()
+        header_sample = "\n".join(text.split("\n")[:25]).upper()
+
+        # 1. Khớp theo hậu tố số hiệu văn bản (Độ chính xác cao nhất)
+        for cfg in LEGAL_AGENCIES_CONFIG:
+            if any(re.search(pat, doc_num_upper) for pat in cfg["num_patterns"]):
+                return {"name": cfg["name"], "code": cfg["code"]}, cfg["default_doc_type"]
+
+        # 2. Khớp theo tên file
+        for cfg in LEGAL_AGENCIES_CONFIG:
+            if any(pat in file_name_lower for pat in cfg["filename_patterns"]):
+                return {"name": cfg["name"], "code": cfg["code"]}, cfg["default_doc_type"]
+
+        # 3. Khớp theo tiêu ngữ đầu văn bản (Header)
+        for cfg in LEGAL_AGENCIES_CONFIG:
+            if any(kw in header_sample for kw in cfg["header_keywords"]):
+                return {"name": cfg["name"], "code": cfg["code"]}, cfg["default_doc_type"]
+
+        return {"name": DEFAULT_AGENCY["name"], "code": DEFAULT_AGENCY["code"]}, DEFAULT_AGENCY["default_doc_type"]
+
+    def extract_dates(self, text: str) -> Tuple[Optional[str], Optional[str]]:
+        """Bóc tách ngày ban hành (issued_date) và ngày có hiệu lực (effective_from)."""
+        issued_date = None
+        effective_from = None
+
+        # 1. Bóc tách ngày ban hành
+        match_issued = re.search(
+            r"(?:ngày|thông qua ngày)\s+(\d{1,2})\s+tháng\s+(\d{1,2})\s+năm\s+(20\d{2}|19\d{2})",
+            text[:2500],
+            re.IGNORECASE,
+        )
+        if not match_issued:
+            match_issued = re.search(
+                r"(?:thông qua ngày|ngày)\s+(\d{1,2})\s+tháng\s+(\d{1,2})\s+năm\s+(20\d{2}|19\d{2})",
+                text[-2000:],
+                re.IGNORECASE,
+            )
+
+        if match_issued:
+            d, m, y = match_issued.group(1), match_issued.group(2), match_issued.group(3)
+            issued_date = f"{y}-{m.zfill(2)}-{d.zfill(2)}"
+
+        # 2. Bóc tách ngày có hiệu lực (thường ở Điều khoản thi hành)
+        match_eff = re.search(
+            r"(?:có hiệu lực|hiệu lực thi hành)(?:\s+từ|\s+kể từ)?\s+ngày\s+(\d{1,2})\s+tháng\s+(\d{1,2})\s+năm\s+(20\d{2}|19\d{2})",
+            text,
+            re.IGNORECASE,
+        )
+        if match_eff:
+            d, m, y = match_eff.group(1), match_eff.group(2), match_eff.group(3)
+            effective_from = f"{y}-{m.zfill(2)}-{d.zfill(2)}"
+
+        return issued_date, effective_from
+
     def extract_document_info(self, text: str, file_name: str) -> Dict[str, Any]:
         """Trích xuất thông tin tổng quan của văn bản từ tên file hoặc phần đầu văn bản."""
         doc_num = ""
-        doc_type = "luat"
         title = ""
 
         # 1. Ưu tiên phát hiện số hiệu từ nội dung văn bản trước
-        num_match = re.search(r"(?:Số|Luật số|Nghị định số|Thông tư số)[\s:]*([0-9]+[/-][0-9]+[/-][A-Za-z0-9\-]+)", text, re.IGNORECASE)
+        num_match = re.search(r"(?:Số|Luật số|Nghị định số|Thông tư số)[\s:]*([0-9]+[/-][0-9]+[/-][^\s\n,;*]+)", text, re.IGNORECASE)
         if not num_match:
             # 2. Nếu không thấy trong nội dung, phát hiện từ tên file
-            num_match = re.search(r"(\d+[-/]\d+[-/][A-Za-z0-9\-]+)", file_name)
+            num_match = re.search(r"(\d+[-/]\d+[-/][^\s\n,;._]+)", file_name)
 
         if num_match:
             raw_num = num_match.group(1).replace("-", "/")
@@ -67,15 +124,10 @@ class HierarchicalLegalParser:
         else:
             doc_num = file_name.replace(".md", "").replace(".pdf", "").upper()
 
-        # Xác định loại văn bản
-        if "NĐ-CP" in doc_num or "ND-CP" in doc_num or "nghi_dinh" in file_name.lower():
-            doc_type = "nghi_dinh"
-        elif "TT-" in doc_num or "thong_tu" in file_name.lower():
-            doc_type = "thong_tu"
-        elif "QH" in doc_num or "luat" in file_name.lower():
-            doc_type = "luat"
+        # 2. Xác định cơ quan ban hành & loại văn bản tự động từ config
+        issuing_agency, doc_type = self.extract_issuing_agency(doc_num, text, file_name)
 
-        # Trích xuất tiêu đề chính
+        # 3. Trích xuất tiêu đề chính
         first_lines = [l.strip("#* \t") for l in text.split("\n")[:10] if l.strip()]
         for line in first_lines:
             if any(k in line.upper() for k in ["LUẬT", "NGHỊ ĐỊNH", "THÔNG TƯ", "QUY ĐỊNH"]):
@@ -84,7 +136,10 @@ class HierarchicalLegalParser:
         if not title:
             title = f"Văn bản pháp luật {doc_num}"
 
-        doc_id = "doc_" + re.sub(r"[^a-zA-Z0-9_]", "_", doc_num).lower().strip("_")
+        # 4. Trích xuất ngày ban hành và ngày hiệu lực
+        extracted_issued, extracted_effective = self.extract_dates(text)
+
+        doc_id = "doc_" + re.sub(r"[^a-zA-Z0-9_]", "_", doc_num.replace("Đ", "D").replace("đ", "d")).lower().strip("_")
 
         return {
             "id": doc_id,
@@ -92,9 +147,11 @@ class HierarchicalLegalParser:
             "title": title,
             "short_title": f"{doc_type.capitalize()} {doc_num}",
             "document_type": doc_type,
+            "issuing_agency": issuing_agency,
             "domain": ["giao_thong_duong_bo"],
             "current_status": "active",
-            "effective_from": "2025-01-01",  # Ngày hiệu lực chuẩn mặc định
+            "issued_date": extracted_issued or "2024-01-01",
+            "effective_from": extracted_effective or "2025-01-01",
             "effective_to": None,
             "is_current": True,
         }
@@ -214,9 +271,9 @@ class HierarchicalLegalParser:
             "title": doc_info["title"],
             "short_title": doc_info["short_title"],
             "document_type": doc_info["document_type"],
-            "issuing_agency": {"name": "Quốc hội / Chính phủ", "code": "QUOC_HOI"},
+            "issuing_agency": doc_info["issuing_agency"],
             "domain": doc_info["domain"],
-            "issued_date": "2024-06-27",
+            "issued_date": doc_info["issued_date"],
             "first_effective_date": doc_info["effective_from"],
             "current_status": doc_info["current_status"],
             "language": "vi",
