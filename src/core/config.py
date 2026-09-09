@@ -16,12 +16,59 @@ VECTOR_DB_DIR.mkdir(parents=True, exist_ok=True)
 # Load environment variables
 load_dotenv(BASE_DIR / ".env")
 
+import re
+from typing import List
+
 # Hugging Face & API Keys
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 if HF_TOKEN and "HUGGING_FACE_HUB_TOKEN" not in os.environ:
     os.environ["HUGGING_FACE_HUB_TOKEN"] = HF_TOKEN
 
-LLAMA_CLOUD_API_KEY = os.getenv("LLAMA_CLOUD_API_KEY") or os.getenv("LLAMA_PARSE_API_KEY") or ""
+
+def get_llama_cloud_api_keys() -> List[str]:
+    """
+    Collect all configured LlamaCloud API keys from environment variables.
+    Supports:
+    - LLAMA_CLOUD_API_KEY_1, LLAMA_CLOUD_API_KEY_2, LLAMA_CLOUD_API_KEY_3, ...
+    - LLAMA_CLOUD_API_KEYS (comma or semicolon separated string)
+    - LLAMA_CLOUD_API_KEY or LLAMA_PARSE_API_KEY
+    Returns a deduplicated list of non-empty API keys in order.
+    """
+    keys: List[str] = []
+
+    # 1. Numbered env vars: LLAMA_CLOUD_API_KEY_1, LLAMA_CLOUD_API_KEY_2, ...
+    idx = 1
+    while True:
+        k = os.getenv(f"LLAMA_CLOUD_API_KEY_{idx}")
+        if not k:
+            break
+        k_clean = k.strip()
+        if k_clean and k_clean not in keys:
+            keys.append(k_clean)
+        idx += 1
+
+    # 2. Plural or CSV env var: LLAMA_CLOUD_API_KEYS
+    raw_plural = os.getenv("LLAMA_CLOUD_API_KEYS", "")
+    if raw_plural:
+        for part in re.split(r"[,;]", raw_plural):
+            part_clean = part.strip()
+            if part_clean and part_clean not in keys:
+                keys.append(part_clean)
+
+    # 3. Standard env vars: LLAMA_CLOUD_API_KEY, LLAMA_PARSE_API_KEY
+    for env_name in ["LLAMA_CLOUD_API_KEY", "LLAMA_PARSE_API_KEY"]:
+        val = os.getenv(env_name, "")
+        if val:
+            for part in re.split(r"[,;]", val):
+                part_clean = part.strip()
+                if part_clean and part_clean not in keys:
+                    keys.append(part_clean)
+
+    return keys
+
+
+LLAMA_CLOUD_API_KEYS = get_llama_cloud_api_keys()
+LLAMA_CLOUD_API_KEY = LLAMA_CLOUD_API_KEYS[0] if LLAMA_CLOUD_API_KEYS else ""
 LLAMA_PARSE_API_KEY = LLAMA_CLOUD_API_KEY
 QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
 OPEN_AI_API_KEY = os.getenv("OPEN_AI_API_KEY", "")

@@ -7,6 +7,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from src.core.config import PROCESSED_DIR, RAW_DIR
+from src.ingestion.data_loader import process_all_pdfs
 from src.ingestion.legal_parser import HierarchicalLegalParser, calculate_file_hash
 from src.ingestion.hierarchical_chunker import HierarchicalLegalChunker
 from src.storage.postgres_manager import PostgresManager
@@ -14,13 +15,17 @@ from src.storage.qdrant_manager import QdrantManager
 from src.storage.indexer import LlamaIndexEmbedder
 
 
-def run_ingestion(force_reindex: bool = False):
+def run_ingestion(force_reindex: bool = False, force_local: bool = False):
     """Pipeline nạp dữ liệu hoàn chỉnh:
     PDF/Markdown -> Parser Cấu trúc Cây -> Hierarchical Chunker -> Embedder -> PostgreSQL -> Qdrant.
     """
     print("=" * 70)
     print("KHỞI ĐỘNG PIPELINE INGESTION PHÁP LUẬT PHÂN CẤP (PostgreSQL + Qdrant)")
     print("=" * 70)
+
+    # 0. Chạy DataLoader bóc tách PDF sang Markdown (Resume/Fallback tự động để tiết kiệm token)
+    print("\n[Bước 1/6] Kiểm tra & Bóc tách PDF từ data/raw (DataLoader với Resume/Fallback)...")
+    process_all_pdfs(overwrite=force_reindex, force_local=force_local)
 
     # 1. Khởi tạo Managers
     pg_mgr = PostgresManager()
@@ -37,7 +42,6 @@ def run_ingestion(force_reindex: bool = False):
     md_files = sorted(PROCESSED_DIR.glob("*.md"))
     if not md_files:
         print(f"[Ingest Warning] Không tìm thấy file markdown nào trong {PROCESSED_DIR}.")
-        print("Vui lòng chạy 'python src/ingestion/data_loader.py' trước để trích xuất PDF sang Markdown.")
         return
 
     total_chunks_indexed = 0
@@ -92,4 +96,5 @@ def run_ingestion(force_reindex: bool = False):
 
 if __name__ == "__main__":
     force = "--reset" in sys.argv or "--force" in sys.argv
-    run_ingestion(force_reindex=force)
+    local_only = "--local" in sys.argv or "--force-local" in sys.argv
+    run_ingestion(force_reindex=force, force_local=local_only)

@@ -41,6 +41,7 @@ class QdrantManager:
         self.collection_name = collection_name
         self.vector_dim = vector_dim
         self.client = None
+        self.is_server_connected = False
 
         if QdrantClient is None:
             print("[Qdrant Cảnh báo] Thư viện qdrant-client chưa được cài đặt.")
@@ -51,19 +52,22 @@ class QdrantManager:
                 print(f"[Qdrant] Đang kết nối tới Qdrant Server: {url}...")
                 is_local = "localhost" in url or "127.0.0.1" in url
                 effective_api_key = None if is_local else (api_key if api_key else None)
+                conn_timeout = 2 if is_local else 10
                 self.client = QdrantClient(
                     url=url,
                     api_key=effective_api_key,
-                    timeout=10,
+                    timeout=conn_timeout,
                     check_compatibility=False,
                 )
                 # Test connection
                 self.client.get_collections()
+                self.is_server_connected = True
                 print(f"[Qdrant] Kết nối thành công tới Server {url}")
             else:
                 raise ValueError("URL không hợp lệ, chuyển sang local storage.")
         except Exception as exc:
             print(f"[Qdrant Cảnh báo] Không thể kết nối tới Qdrant Server ({exc}). Chuyển sang Qdrant Local/In-Memory...")
+            self.is_server_connected = False
             try:
                 self.client = QdrantClient(path=QDRANT_LOCAL_PATH)
             except Exception:
@@ -225,7 +229,10 @@ class QdrantManager:
         except Exception:
             pass
 
-        # 2. Fallback sang REST HTTP Search API (Tương thích tuyệt đối mọi phiên bản Qdrant v1.x)
+        # 2. Fallback sang REST HTTP Search API (chỉ khi có server)
+        if not self.is_server_connected:
+            return candidates
+
         try:
             import urllib.request
             import json

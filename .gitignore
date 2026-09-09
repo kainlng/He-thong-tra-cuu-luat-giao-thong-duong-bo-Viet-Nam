@@ -1,16 +1,38 @@
-#Mo hinh AI va file thuc thi
+# =========================
+# AI Models & Executables
+# =========================
 *.gguf
-llama_bin/**
+llama_bin/
 
-#Moi truong ao Python
-.env/
+# =========================
+# Python Virtual Environment
+# =========================
 venv/
+.venv/
+env/
 
-#Cache va File bien dich Python
-__pycache__/**
-
+# =========================
+# Environment Variables / Secrets
+# =========================
 .env
+.env.*
+!.env.example
 
-.vscode
+# =========================
+# Python Cache / Compiled Files
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
 
-data/*
+# =========================
+# IDE / Editor
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# Data / Vector Database
+# =========================
+data/
+vector_db/
