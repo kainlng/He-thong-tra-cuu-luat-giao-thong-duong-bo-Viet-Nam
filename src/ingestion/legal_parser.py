@@ -108,33 +108,90 @@ class HierarchicalLegalParser:
         doc_num = ""
         title = ""
 
-        # 1. Ưu tiên phát hiện số hiệu từ nội dung văn bản trước
-        num_match = re.search(r"(?:Số|Luật số|Nghị định số|Thông tư số)[\s:]*([0-9]+[/-][0-9]+[/-][^\s\n,;*]+)", text, re.IGNORECASE)
+        # 1. Trích xuất số hiệu văn bản (text trước, file_name sau)
+        num_match = re.search(
+            r"(?:Số|Luật số|Nghị định số|Thông tư số|Quyết định số|Nghị quyết số)[\s:]*([0-9]+[/-][0-9]+[/-][A-Za-z0-9Đđ\-_]+)",
+            text,
+            re.IGNORECASE,
+        )
         if not num_match:
-            # 2. Nếu không thấy trong nội dung, phát hiện từ tên file
-            num_match = re.search(r"(\d+[-/]\d+[-/][^\s\n,;._]+)", file_name)
+            # Thử tìm dạng: Luật số 36/2024/QH15, Nghị định số 151/2024/NĐ-CP
+            num_match = re.search(
+                r"(?:Luật|Nghị định|Thông tư|Quyết định|Nghị quyết)\s+số\s+([0-9]+[/-][0-9]+[/-][A-Za-z0-9Đđ\-_]+)",
+                text,
+                re.IGNORECASE,
+            )
 
         if num_match:
-            raw_num = num_match.group(1).replace("-", "/")
-            parts = raw_num.split("/")
-            if len(parts) >= 3:
-                doc_num = f"{parts[0]}/{parts[1]}/{parts[2].upper()}"
+            raw_num = num_match.group(1).upper()
+            parts = re.split(r"[/_-]", raw_num, maxsplit=2)
+            if len(parts) == 3:
+                doc_num = f"{parts[0]}/{parts[1]}/{parts[2]}"
             else:
-                doc_num = raw_num.upper()
+                doc_num = raw_num
         else:
-            doc_num = file_name.replace(".md", "").replace(".pdf", "").upper()
+            # 2. Nếu không thấy trong nội dung, phát hiện từ tên file (hỗ trợ cả dấu - và _)
+            fn_match = re.search(r"(\d+)[-_](\d+)[-_]([a-zA-Z0-9Đđ]+(?:[-_][a-zA-Z0-9Đđ]+)?)", file_name)
+            if fn_match:
+                doc_num = f"{fn_match.group(1)}/{fn_match.group(2)}/{fn_match.group(3).upper().replace('_', '-')}"
+            else:
+                doc_num = file_name.replace(".md", "").replace(".pdf", "").upper()
 
         # 2. Xác định cơ quan ban hành & loại văn bản tự động từ config
         issuing_agency, doc_type = self.extract_issuing_agency(doc_num, text, file_name)
 
-        # 3. Trích xuất tiêu đề chính
-        first_lines = [l.strip("#* \t") for l in text.split("\n")[:10] if l.strip()]
-        for line in first_lines:
-            if any(k in line.upper() for k in ["LUẬT", "NGHỊ ĐỊNH", "THÔNG TƯ", "QUY ĐỊNH"]):
+        # 3. Trích xuất tiêu đề chính (title)
+        raw_lines = [l.strip("#* \t\r") for l in text.split("\n")[:35]]
+        clean_lines = []
+        for l in raw_lines:
+            if not l or l.startswith(">") or l.startswith("<") or l.startswith("<!--"):
+                continue
+            if any(ign in l.upper() for ign in ["CỘNG HÒA", "ĐỘC LẬP", "HÀ NỘI, NGÀY", "THÔNG TIN ĐIỆN TỬ", "NGƯỜI KÝ", "CƠ QUAN:", "THỜI GIAN KÝ:"]):
+                continue
+            clean_lines.append(l)
+
+        for i, line in enumerate(clean_lines):
+            # Kiểm tra nếu dòng có dạng "Luật số ...", "Nghị định số ..."
+            m_named_num = re.match(r"^(Luật|Nghị định|Thông tư|Quyết định|Nghị quyết)\s+số\b.*", line, re.IGNORECASE)
+            if m_named_num:
+                kind_name = m_named_num.group(1).capitalize()
+                if i + 1 < len(clean_lines):
+                    next_l = clean_lines[i + 1]
+                    if (
+                        not next_l.startswith("Chương")
+                        and not next_l.startswith("Điều")
+                        and not next_l.startswith("Số:")
+                        and next_l.upper() not in ["LUẬT", "NGHỊ ĐỊNH", "THÔNG TƯ", "QUYẾT ĐỊNH", "NGHỊ QUYẾT"]
+                    ):
+                        title = f"{kind_name} {next_l.capitalize() if next_l.isupper() else next_l}"
+                        break
+                continue
+
+            # Bỏ qua các dòng chỉ chứa số hiệu (Số: ...)
+            if re.match(r"^Số[\s:]", line, re.IGNORECASE):
+                continue
+
+            upper_l = line.upper()
+            if upper_l in ["NGHỊ ĐỊNH", "LUẬT", "THÔNG TƯ", "QUYẾT ĐỊNH", "NGHỊ QUYẾT"]:
+                if i + 1 < len(clean_lines):
+                    sub = clean_lines[i + 1]
+                    title = f"{line.capitalize()} {sub.capitalize() if sub.isupper() else sub}"
+                else:
+                    title = line
+                break
+            elif any(upper_l.startswith(k) for k in ["NGHỊ ĐỊNH", "LUẬT", "THÔNG TƯ", "QUYẾT ĐỊNH", "NGHỊ QUYẾT", "QUY ĐỊNH"]):
                 title = line
                 break
+
         if not title:
-            title = f"Văn bản pháp luật {doc_num}"
+            type_labels = {
+                "nghi_dinh": "Nghị định",
+                "luat": "Luật",
+                "thong_tu": "Thông tư",
+                "quyet_dinh": "Quyết định",
+                "nghi_quyet": "Nghị quyết",
+            }
+            title = f"{type_labels.get(doc_type, 'Văn bản')} {doc_num}"
 
         # 4. Trích xuất ngày ban hành và ngày hiệu lực
         extracted_issued, extracted_effective = self.extract_dates(text)
