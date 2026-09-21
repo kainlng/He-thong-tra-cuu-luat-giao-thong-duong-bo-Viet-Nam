@@ -1,6 +1,7 @@
 import sys
+import argparse
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 if str(BASE_DIR) not in sys.path:
@@ -15,21 +16,26 @@ from src.storage.qdrant_manager import QdrantManager
 from src.storage.indexer import LlamaIndexEmbedder
 
 
-def run_ingestion(force_reindex: bool = False, force_local: bool = False):
+def run_ingestion(
+    reprocess: bool = False,
+    force_ocr: bool = False,
+    reset_db: bool = False,
+):
     """Pipeline nạp dữ liệu hoàn chỉnh:
-    PDF/Markdown -> Parser Cấu trúc Cây -> Hierarchical Chunker -> Embedder -> PostgreSQL -> Qdrant.
+    PDF -> Xberg Extraction (Tesseract vie) -> Parser Cấu trúc Cây -> Hierarchical Chunker -> Embedder -> PostgreSQL -> Qdrant.
     """
     print("=" * 70)
-    print("KHỞI ĐỘNG PIPELINE INGESTION PHÁP LUẬT PHÂN CẤP (PostgreSQL + Qdrant)")
+    print("KHỞI ĐỘNG PIPELINE INGESTION PHÁP LUẬT PHÂN CẤP (XBERG + POSTGRESQL + QDRANT)")
     print("=" * 70)
 
-    # 0. Chạy DataLoader bóc tách PDF sang Markdown (Resume/Fallback tự động để tiết kiệm token)
-    print("\n[Bước 1/6] Kiểm tra & Bóc tách PDF từ data/raw (DataLoader với Resume/Fallback)...")
-    process_all_pdfs(overwrite=force_reindex, force_local=force_local)
+    # 0. Chạy DataLoader bóc tách PDF sang Markdown bằng Xberg
+    print("\n[Bước 1/6] Kiểm tra & Bóc tách PDF từ data/raw bằng Xberg (Tesseract vie)...")
+    process_all_pdfs(overwrite=reprocess, force_ocr=force_ocr)
 
     # 1. Khởi tạo Managers
     pg_mgr = PostgresManager()
-    if force_reindex:
+    if reset_db:
+        print("[Database Reset] Đang xóa và khởi tạo lại toàn bộ 7 bảng trong PostgreSQL...")
         pg_mgr.reset_db()
     else:
         pg_mgr.init_db()
@@ -39,10 +45,18 @@ def run_ingestion(force_reindex: bool = False, force_local: bool = False):
     chunker = HierarchicalLegalChunker()
     embedder = LlamaIndexEmbedder()
 
-    md_files = sorted(PROCESSED_DIR.glob("*.md"))
-    if not md_files:
+    all_md_files = sorted(PROCESSED_DIR.glob("*.md"))
+    if not all_md_files:
         print(f"[Ingest Warning] Không tìm thấy file markdown nào trong {PROCESSED_DIR}.")
         return
+
+    # Lọc danh sách file Markdown: ưu tiên file *_xberg.md nếu tồn tại cả file cũ
+    stem_map = {}
+    for f in all_md_files:
+        base_stem = f.stem.replace("_xberg", "").replace("_llamacloud", "")
+        if f.name.endswith("_xberg.md") or base_stem not in stem_map:
+            stem_map[base_stem] = f
+    md_files = sorted(stem_map.values(), key=lambda p: p.name)
 
     total_chunks_indexed = 0
 
@@ -50,20 +64,20 @@ def run_ingestion(force_reindex: bool = False, force_local: bool = False):
         print(f"\nĐang xử lý tài liệu: {md_file.name}...")
         file_hash = calculate_file_hash(md_file)
 
-        if not force_reindex and pg_mgr.check_document_exists_by_hash(file_hash):
+        if not reset_db and pg_mgr.check_document_exists_by_hash(file_hash):
             print(f"Tài liệu {md_file.name} (hash: {file_hash[:12]}...) đã tồn tại trong PostgreSQL. Bỏ qua.")
             continue
 
         raw_content = md_file.read_text(encoding="utf-8")
 
-        # 2. Phân tích cấu trúc phân cấp
+        # 2. Phân tích cấu trúc phân cấp (có tích hợp Page Tracking)
         print("  -> Bóc tách cây phân cấp (Văn bản -> Chương -> Điều -> Khoản -> Điểm)...")
         parsed_tree = parser.parse_markdown(raw_content, file_name=md_file.name, file_hash=file_hash)
 
         # 3. Tạo Chunks phân cấp
         print("  -> Tạo các Semantic Chunks và liên kết parent_chunk_id...")
         chunks = chunker.create_chunks(parsed_tree)
-        print(f"  -> Đã tạo {len(chunks)} chunks từ {len(parsed_tree['articles'])} Điều luật.")
+        print(f"  -> Đã tạo {len(chunks)} chunks từ {len(parsed_tree['articles'])} Điều luật (Chương: {len(parsed_tree['chapters'])}).")
 
         # 4. Sinh Embeddings cho các chunks
         print(f"  -> Đang sinh Vector Embeddings ({embedder.model.__class__.__name__})...")
@@ -95,6 +109,36 @@ def run_ingestion(force_reindex: bool = False, force_local: bool = False):
 
 
 if __name__ == "__main__":
-    force = "--reset" in sys.argv or "--force" in sys.argv
-    local_only = "--local" in sys.argv or "--force-local" in sys.argv
-    run_ingestion(force_reindex=force, force_local=local_only)
+    cli_parser = argparse.ArgumentParser(description="Legal RAG Ingestion Pipeline with XBerg & Tesseract OCR")
+    cli_parser.add_argument(
+        "--reprocess", "--force-extract",
+        action="store_true",
+        help="Re-run PDF extraction with Xberg even if files were processed before"
+    )
+    cli_parser.add_argument(
+        "--force-ocr",
+        action="store_true",
+        help="Force Tesseract OCR on all PDF pages instead of auto-detection"
+    )
+    cli_parser.add_argument(
+        "--reset-db",
+        action="store_true",
+        help="Reset and recreate PostgreSQL tables and clear Qdrant collection"
+    )
+    cli_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Full re-process and database reset (legacy alias)"
+    )
+
+    args = cli_parser.parse_args()
+
+    reprocess_flag = args.reprocess or args.force
+    reset_db_flag = args.reset_db or args.force
+    force_ocr_flag = args.force_ocr
+
+    run_ingestion(
+        reprocess=reprocess_flag,
+        force_ocr=force_ocr_flag,
+        reset_db=reset_db_flag,
+    )

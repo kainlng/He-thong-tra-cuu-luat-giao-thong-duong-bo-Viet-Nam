@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
 from src.ingestion.data_loader import clean_legal_markdown
+from src.ingestion.xberg_processor import normalize_xberg_markdown
 from src.core.legal_rules import LEGAL_AGENCIES_CONFIG, DEFAULT_AGENCY
 
 
@@ -22,9 +23,9 @@ class HierarchicalLegalParser:
     """
 
     def __init__(self):
-        # Regex nhận diện Chương: Chương I, Chương II, Chương 1...
+        # Regex nhận diện Chương: Chương I, Chương II, Chương 1, **Chương I...**
         self.chapter_pattern = re.compile(
-            r"(?:^|\n)(?:#+\s*)?(Chương\s+([IVXLCDM\d]+)[\.:\s]*([^\n]*))",
+            r"(?:^|\n)(?:#+\s*|\*{1,2}\s*)?(Chương\s+([IVXLCDM\d]+)[\.:\s]*([^\n\*#]*))(?:\*{1,2})?",
             re.IGNORECASE,
         )
 
@@ -34,15 +35,15 @@ class HierarchicalLegalParser:
             re.IGNORECASE,
         )
 
-        # Regex nhận diện Khoản: 1. Nội dung, Khoản 1. Nội dung...
+        # Regex nhận diện Khoản: 1. Nội dung, Khoản 1. Nội dung, - 1. Nội dung...
         self.clause_pattern = re.compile(
-            r"(?:^|\n)(?:Khoản\s+)?(\d+)[\.\)]\s+([^\n]+(?:\n(?!\s*(?:(?:Khoản\s+)?\d+[\.\)]|[a-đ]\)|\*{1,2}?Điều|\#+))[^\n]+)*)",
+            r"(?:^|\n)(?:[-*•]\s*)?(?:Khoản\s+)?(\d+)[\.\)]\s+([^\n]+(?:\n(?!\s*(?:(?:[-*•]\s*)?(?:Khoản\s+)?\d+[\.\)]|(?:[-*•]\s*)?[a-đA-Đ][\.\)]|\*{1,2}?Điều|\#+))[^\n]+)*)",
             re.IGNORECASE,
         )
 
-        # Regex nhận diện Điểm: a) Nội dung, Điểm a) Nội dung...
+        # Regex nhận diện Điểm: a) Nội dung, Điểm a) Nội dung, - a) Nội dung...
         self.point_pattern = re.compile(
-            r"(?:^|\n)(?:Điểm\s+)?([a-đA-Đ])[\.\)]\s+([^\n]+(?:\n(?!\s*(?:(?:Khoản\s+)?\d+[\.\)]|[a-đ]\)|\*{1,2}?Điều|\#+))[^\n]+)*)",
+            r"(?:^|\n)(?:[-*•]\s*)?(?:Điểm\s+)?([a-đA-Đ])[\.\)]\s+([^\n]+(?:\n(?!\s*(?:(?:[-*•]\s*)?(?:Khoản\s+)?\d+[\.\)]|(?:[-*•]\s*)?[a-đA-Đ][\.\)]|\*{1,2}?Điều|\#+))[^\n]+)*)",
             re.IGNORECASE,
         )
 
@@ -214,16 +215,23 @@ class HierarchicalLegalParser:
         }
 
     def parse_clauses_and_points(
-        self, article_text: str, doc_id: str, ver_id: str, chap_id: Optional[str], art_id: str
+        self,
+        article_text: str,
+        doc_id: str,
+        ver_id: str,
+        chap_id: Optional[str],
+        art_id: str,
+        page_start: int = 1,
+        page_end: int = 1,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Tách các Khoản và Điểm bên trong một Điều luật."""
+        """Tách các Khoản và Điểm bên trong một Điều luật kèm theo thông tin số trang."""
         clauses = []
         points = []
         seen_clause_ids = set()
         seen_point_ids = set()
 
-        # Tách theo từng dòng bắt đầu bằng số thứ tự Khoản: 1., 2., 3...
-        clause_blocks = re.split(r"(?:^|\n)(?=(?:Khoản\s+)?\d+[\.\)])", article_text)
+        # Tách theo từng dòng bắt đầu bằng số thứ tự Khoản: 1., 2., Khoản 1., - 1...
+        clause_blocks = re.split(r"(?:^|\n)(?=(?:[-*•]\s*)?(?:Khoản\s+)?\d+[\.\)])", article_text)
 
         clause_order = 1
         for block in clause_blocks:
@@ -231,7 +239,7 @@ class HierarchicalLegalParser:
             if not block:
                 continue
 
-            match_clause = re.match(r"^(?:Khoản\s+)?(\d+)[\.\)]\s*(.*)", block, re.DOTALL)
+            match_clause = re.match(r"^(?:[-*•]\s*)?(?:Khoản\s+)?(\d+)[\.\)]\s*(.*)", block, re.DOTALL)
             if match_clause:
                 clause_num = match_clause.group(1)
                 clause_content = match_clause.group(2).strip()
@@ -243,8 +251,8 @@ class HierarchicalLegalParser:
                     c_idx += 1
                 seen_clause_ids.add(clause_id)
 
-                # Kiểm tra xem trong Khoản này có chứa các Điểm: a), b), c)... không
-                point_blocks = re.split(r"(?:^|\n)(?=(?:Điểm\s+)?[a-đA-Đ][\.\)])", clause_content)
+                # Kiểm tra xem trong Khoản này có chứa các Điểm: a), b), - a)... không
+                point_blocks = re.split(r"(?:^|\n)(?=(?:[-*•]\s*)?(?:Điểm\s+)?[a-đA-Đ][\.\)])", clause_content)
                 
                 point_order = 1
                 clause_body = point_blocks[0].strip() if point_blocks else clause_content
@@ -254,7 +262,7 @@ class HierarchicalLegalParser:
                         p_block = p_block.strip()
                         if not p_block:
                             continue
-                        match_point = re.match(r"^(?:Điểm\s+)?([a-đA-Đ])[\.\)]\s*(.*)", p_block, re.DOTALL)
+                        match_point = re.match(r"^(?:[-*•]\s*)?(?:Điểm\s+)?([a-đA-Đ])[\.\)]\s*(.*)", p_block, re.DOTALL)
                         if match_point:
                             p_label = match_point.group(1).lower()
                             p_content = match_point.group(2).strip()
@@ -277,6 +285,8 @@ class HierarchicalLegalParser:
                                 "content": p_content,
                                 "order_num": point_order,
                                 "parent_id": clause_id,
+                                "page_start": page_start,
+                                "page_end": page_end,
                             })
                             point_order += 1
 
@@ -290,6 +300,8 @@ class HierarchicalLegalParser:
                     "content": clause_body,
                     "order_num": clause_order,
                     "parent_id": art_id,
+                    "page_start": page_start,
+                    "page_end": page_end,
                 })
                 clause_order += 1
             else:
@@ -308,15 +320,42 @@ class HierarchicalLegalParser:
                             "content": block,
                             "order_num": 1,
                             "parent_id": art_id,
+                            "page_start": page_start,
+                            "page_end": page_end,
                         })
                 clause_order += 1
 
         return clauses, points
 
     def parse_markdown(self, markdown_text: str, file_name: str, file_hash: str = "") -> Dict[str, Any]:
-        """Phân tích toàn bộ văn bản markdown thành cây cấu trúc pháp lý hoàn chỉnh."""
-        cleaned_text = clean_legal_markdown(markdown_text)
+        """Phân tích toàn bộ văn bản markdown thành cây cấu trúc pháp lý hoàn chỉnh kèm page tracking."""
+        cleaned_text = clean_legal_markdown(normalize_xberg_markdown(markdown_text))
         doc_info = self.extract_document_info(cleaned_text, file_name)
+
+        # 0. Trích xuất vị trí các marker trang <!-- PAGE \d+ --> để map số trang thực tế
+        page_markers: List[Tuple[int, int]] = []
+        for m_page in re.finditer(r"<!--\s*PAGE\s+(\d+)\s*-->", cleaned_text):
+            page_markers.append((m_page.start(), int(m_page.group(1))))
+
+        def get_page_range(start_idx: int, end_idx: int) -> Tuple[int, int]:
+            if not page_markers:
+                return 1, 1
+            p_start = page_markers[0][1]
+            for pos, pnum in page_markers:
+                if pos <= start_idx:
+                    p_start = pnum
+                else:
+                    break
+            p_end = p_start
+            for pos, pnum in page_markers:
+                if pos <= end_idx:
+                    p_end = max(p_end, pnum)
+                else:
+                    break
+            return p_start, p_end
+
+        doc_page_start = page_markers[0][1] if page_markers else 1
+        doc_page_end = page_markers[-1][1] if page_markers else 1
 
         doc_id = doc_info["id"]
         ver_id = f"version_{doc_id.replace('doc_', '')}_v1"
@@ -337,7 +376,11 @@ class HierarchicalLegalParser:
             "source": {
                 "file_name": file_name,
                 "file_hash": file_hash,
-                "source_type": "markdown",
+                "source_type": "pdf_ocr",
+                "page_start": doc_page_start,
+                "page_end": doc_page_end,
+                "ocr_engine": "tesseract",
+                "ocr_backend": "xberg",
             },
         }
 
@@ -379,6 +422,8 @@ class HierarchicalLegalParser:
             end_pos = article_matches[i + 1].start() if i + 1 < len(article_matches) else len(cleaned_text)
             art_body = cleaned_text[start_pos:end_pos].strip()
 
+            art_page_start, art_page_end = get_page_range(match.start(), end_pos)
+
             # Kiểm tra xem có Chương mới nằm giữa Điều trước và Điều hiện tại không
             preceding_text = cleaned_text[article_matches[i - 1].end() if i > 0 else 0 : match.start()]
             chap_match = self.chapter_pattern.search(preceding_text)
@@ -390,6 +435,10 @@ class HierarchicalLegalParser:
                 current_chapter_num = chap_num
 
                 if current_chapter_id not in chapters_dict:
+                    chap_p_start, chap_p_end = get_page_range(
+                        (article_matches[i - 1].end() if i > 0 else 0) + chap_match.start(),
+                        (article_matches[i - 1].end() if i > 0 else 0) + chap_match.end(),
+                    )
                     chapters_dict[current_chapter_id] = {
                         "id": current_chapter_id,
                         "document_id": doc_id,
@@ -398,6 +447,8 @@ class HierarchicalLegalParser:
                         "title": chap_title or chap_raw,
                         "order_num": chapter_order,
                         "parent_id": None,
+                        "page_start": chap_p_start,
+                        "page_end": chap_p_end,
                     }
                     chapter_order += 1
 
@@ -413,6 +464,8 @@ class HierarchicalLegalParser:
                     "parent_id": current_chapter_id,
                     "raw_text": f"Điều {art_num}. {art_title}\n{art_body}".strip(),
                     "body_segments": [art_body] if art_body else [],
+                    "page_start": art_page_start,
+                    "page_end": art_page_end,
                 }
                 article_order += 1
             else:
@@ -420,6 +473,7 @@ class HierarchicalLegalParser:
                 if art_body:
                     articles_dict[art_id]["body_segments"].append(art_body)
                     articles_dict[art_id]["raw_text"] += "\n" + art_body
+                    articles_dict[art_id]["page_end"] = max(articles_dict[art_id].get("page_end", 1), art_page_end)
 
         articles = list(articles_dict.values())
         chapters = list(chapters_dict.values())
@@ -430,7 +484,13 @@ class HierarchicalLegalParser:
         for art in articles:
             combined_body = "\n".join(art.get("body_segments", []))
             clauses, points = self.parse_clauses_and_points(
-                combined_body, doc_id, ver_id, art.get("chapter_id"), art["id"]
+                combined_body,
+                doc_id,
+                ver_id,
+                art.get("chapter_id"),
+                art["id"],
+                page_start=art.get("page_start", 1),
+                page_end=art.get("page_end", 1),
             )
             all_clauses.extend(clauses)
             all_points.extend(points)

@@ -19,6 +19,32 @@ load_dotenv(BASE_DIR / ".env")
 import re
 from typing import List
 
+TESSDATA_DIR = DATA_DIR / "tessdata"
+TESSDATA_DIR.mkdir(parents=True, exist_ok=True)
+SYSTEM_TESSDATA_DIR = Path("C:/Program Files/Tesseract-OCR/tessdata")
+
+
+def resolve_tessdata_dir() -> Path:
+    """Resolve directory containing Tesseract traineddata models (e.g. vie.traineddata).
+    Priority:
+    1. TESSDATA_PREFIX environment variable
+    2. Local project directory: data/tessdata
+    3. Windows system installation directory: C:/Program Files/Tesseract-OCR/tessdata
+    """
+    env_tess = os.getenv("TESSDATA_PREFIX", "")
+    if env_tess and Path(env_tess).exists():
+        return Path(env_tess)
+    if (TESSDATA_DIR / "vie.traineddata").exists():
+        return TESSDATA_DIR
+    if (SYSTEM_TESSDATA_DIR / "vie.traineddata").exists():
+        return SYSTEM_TESSDATA_DIR
+    return TESSDATA_DIR
+
+
+# Xberg Extraction Configuration
+XBERG_OCR_STRATEGY = os.getenv("XBERG_OCR_STRATEGY", "auto")
+XBERG_OCR_LANGUAGE = ["vie"]
+
 # Hugging Face & API Keys
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 if HF_TOKEN and "HUGGING_FACE_HUB_TOKEN" not in os.environ:

@@ -143,9 +143,11 @@ class HierarchicalLegalChunker:
                 },
                 "source": {
                     "file_name": file_name,
-                    "page_start": 1,
-                    "page_end": 1,
-                    "source_type": "markdown",
+                    "page_start": art.get("page_start", 1),
+                    "page_end": art.get("page_end", 1),
+                    "source_type": "pdf_ocr",
+                    "ocr_engine": "tesseract",
+                    "ocr_backend": "xberg",
                 },
                 "search": {
                     "qdrant_collection": "legal_chunks",
@@ -194,7 +196,14 @@ class HierarchicalLegalChunker:
                             "violation_types": cl_violations or art_violations,
                         },
                         "validity": art_chunk["validity"],
-                        "source": art_chunk["source"],
+                        "source": {
+                            "file_name": file_name,
+                            "page_start": clause.get("page_start", art.get("page_start", 1)),
+                            "page_end": clause.get("page_end", art.get("page_end", 1)),
+                            "source_type": "pdf_ocr",
+                            "ocr_engine": "tesseract",
+                            "ocr_backend": "xberg",
+                        },
                         "search": {
                             "qdrant_collection": "legal_chunks",
                             "qdrant_point_id": cl_chunk_id,
@@ -240,7 +249,14 @@ class HierarchicalLegalChunker:
                                 "violation_types": pt_violations or cl_violations or art_violations,
                             },
                             "validity": art_chunk["validity"],
-                            "source": art_chunk["source"],
+                            "source": {
+                                "file_name": file_name,
+                                "page_start": pt.get("page_start", clause.get("page_start", art.get("page_start", 1))),
+                                "page_end": pt.get("page_end", clause.get("page_end", art.get("page_end", 1))),
+                                "source_type": "pdf_ocr",
+                                "ocr_engine": "tesseract",
+                                "ocr_backend": "xberg",
+                            },
                             "search": {
                                 "qdrant_collection": "legal_chunks",
                                 "qdrant_point_id": pt_chunk_id,

@@ -47,6 +47,7 @@ services:
       - ./src:/app/src
       - ./vector_db:/app/vector_db
       - ./data:/app/data
+      - hf_cache:/root/.cache
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,3 +57,4 @@ services:
 volumes:
   postgres_data:
   qdrant_data:
+  hf_cache:
