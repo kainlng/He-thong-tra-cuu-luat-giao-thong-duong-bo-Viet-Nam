@@ -1,0 +1,47 @@
+---
+id: c29e4786-d6c2-4261-b2ce-36b51a444a91
+---
+flowchart TD
+    subgraph INGESTION["1. Phân hệ Bóc tách & Tiền xử lý (Ingestion)"]
+        A["Tài liệu PDF Công báo<br/>(data/raw/)"] --> B["XBerg Processor<br/>(Tesseract OCR vie)"]
+        B --> C["Văn bản Markdown Chuẩn hóa<br/>(<!-- PAGE markers -->)"]
+        C --> D["Hierarchical Legal Parser<br/>(Bóc tách Cây Pháp luật)"]
+        D --> E["Hierarchical Chunker<br/>(Article/Clause/Point Chunks)"]
+    end
+
+    subgraph STORAGE["2. Phân hệ Lưu trữ Lai (Dual-Storage)"]
+        E --> F["LlamaIndex Embedder<br/>(multilingual-e5-base)"]
+        D --> G[("PostgreSQL 16<br/>Source of Truth<br/>7 Bảng Quan hệ")]
+        E --> G
+        F --> H[("Qdrant Vector DB<br/>Dense Vectors (768d)<br/>+ Minimal Payload Filter")]
+    end
+
+    subgraph RETRIEVAL["3. Phân hệ Truy vấn & Xếp hạng (Retrieval & Rerank)"]
+        I["Truy vấn Người dùng"] --> J["Time Intent Parser<br/>(Phân tích Hiệu lực Thời gian)"]
+        J --> K["Qdrant Pre-filtered Search<br/>(Dense Candidate Retrieval)"]
+        H --> K
+        K --> L["Context Expander<br/>(Tái tạo Toàn văn Điều luật)"]
+        G --> L
+        L --> M["Legal Reranker<br/>(FlashRank / CrossEncoder)"]
+    end
+
+    subgraph GENERATION["4. Phân hệ Sinh văn bản & Kiểm chứng (Generation & Verification)"]
+        M --> N["Deterministic Citation Builder<br/>(Đóng gói Căn cứ Pháp lý)"]
+        N --> O["LLM Generation<br/>(Qwen2.5-72B-Instruct)"]
+        O --> P{"Self-Verification Auditor<br/>(Kiểm chứng Số Điều Luật)"}
+        P -- "Không khớp" --> Q["Fallback Retry Prompt<br/>(Ép tuân thủ Căn cứ)"]
+        Q --> O
+        P -- "Chính xác" --> R["Câu trả lời Cuối cùng + Trích dẫn"]
+    end
+
+    subgraph PRESENTATION["5. Phân hệ Giao diện & Trực quan hóa (Presentation)"]
+        R --> S["Giao diện Người dùng Streamlit (app.py)"]
+        H -.-> T["Vector Visualizer 2D/3D<br/>(PCA, t-SNE, KMeans, Plotly)"]
+        T --> S
+    end
+
+    style INGESTION fill:#eff6ff,stroke:#1d4ed8,stroke-width:1px
+    style STORAGE fill:#f0fdf4,stroke:#16a34a,stroke-width:1px
+    style RETRIEVAL fill:#fefce8,stroke:#ca8a04,stroke-width:1px
+    style GENERATION fill:#faf5ff,stroke:#9333ea,stroke-width:1px
+    style PRESENTATION fill:#f8fafc,stroke:#475569,stroke-width:1px
