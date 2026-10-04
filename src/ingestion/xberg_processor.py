@@ -115,7 +115,27 @@ class XbergProcessor:
             "tessdata_path": self.tessdata_path,
         }
 
-    def build_extraction_config(self, force_ocr: Optional[bool] = None) -> ExtractionConfig:
+    @staticmethod
+    def detect_scanned_pages(pdf_path: Path) -> List[int]:
+        """Tự động phát hiện các trang scan dạng ảnh (thiếu text layer) trong PDF bằng pypdf."""
+        scanned_pages = []
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(str(pdf_path))
+            for idx, page in enumerate(reader.pages):
+                text = (page.extract_text() or "").strip()
+                # Nếu trang có ít hơn 50 ký tự text và có chứa đối tượng hình ảnh, đánh dấu là trang scan
+                if len(text) < 50 and len(page.images) > 0:
+                    scanned_pages.append(idx + 1)
+        except Exception:
+            pass
+        return scanned_pages
+
+    def build_extraction_config(
+        self,
+        force_ocr: Optional[bool] = None,
+        force_ocr_pages: Optional[List[int]] = None,
+    ) -> ExtractionConfig:
         """Khởi tạo đối tượng ExtractionConfig của Xberg với các tham số tối ưu cho Legal RAG."""
         is_force_ocr = self.force_ocr if force_ocr is None else force_ocr
 
@@ -135,6 +155,7 @@ class XbergProcessor:
             output_format="markdown",
             ocr_strategy=self.ocr_strategy,
             force_ocr=is_force_ocr,
+            force_ocr_pages=force_ocr_pages,
             ocr=ocr_config,
             pages=page_config,
             enable_quality_processing=True,
@@ -145,11 +166,23 @@ class XbergProcessor:
         pdf_path: Path,
         force_ocr: Optional[bool] = None,
     ) -> str:
-        """Bóc tách PDF bất đồng bộ qua Xberg và trả về nội dung Markdown đã chuẩn hóa."""
+        """Bóc tách PDF bất đồng bộ qua Xberg và trả về nội dung Markdown đã chuẩn hóa.
+        Hỗ trợ Hybrid PDF: tự động phát hiện các trang scan ảnh để ép OCR trang đó,
+        trong khi các trang text được trích xuất trực tiếp chuẩn xác 100%.
+        """
         if not pdf_path.exists():
             raise FileNotFoundError(f"Không tìm thấy file PDF: {pdf_path}")
 
-        config = self.build_extraction_config(force_ocr=force_ocr)
+        is_force_ocr = self.force_ocr if force_ocr is None else force_ocr
+        target_ocr_pages = None
+
+        if not is_force_ocr:
+            scanned_pages = self.detect_scanned_pages(pdf_path)
+            if scanned_pages:
+                print(f"  [Hybrid PDF] Tự động phát hiện {len(scanned_pages)} trang scan ảnh: {scanned_pages[:10]}...")
+                target_ocr_pages = scanned_pages
+
+        config = self.build_extraction_config(force_ocr=is_force_ocr, force_ocr_pages=target_ocr_pages)
         extract_input = ExtractInput(kind="uri", uri=str(pdf_path.resolve()))
 
         result = await extract(extract_input, config=config)
