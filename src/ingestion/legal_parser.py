@@ -582,9 +582,9 @@ class HierarchicalLegalParser:
             "source_type": extraction_metadata.get("source_type", "pdf") if extraction_metadata else "pdf",
             "page_start": doc_page_start,
             "page_end": doc_page_end,
-            "ocr_engine": extraction_metadata.get("ocr_engine", "tesseract") if extraction_metadata else "tesseract",
-            "ocr_backend": extraction_metadata.get("ocr_backend", "xberg") if extraction_metadata else "xberg",
-            "extraction_method": extraction_metadata.get("method", "xberg") if extraction_metadata else "xberg",
+            "extraction_backend": extraction_metadata.get("extraction_backend", "xberg") if extraction_metadata else "xberg",
+            "ocr_backend": extraction_metadata.get("ocr_backend", "tesseract") if extraction_metadata else "tesseract",
+            "ocr_strategy": extraction_metadata.get("ocr_strategy", "scanned_pages") if extraction_metadata else "scanned_pages",
             "parser_version": self.version,
         }
 

@@ -100,6 +100,8 @@ class QdrantManager:
             if self.collection_name in collections:
                 print(f"[Qdrant] Đang xóa collection cũ: '{self.collection_name}'...")
                 self.client.delete_collection(collection_name=self.collection_name)
+        except Exception as exc:
+            print(f"[Qdrant Cảnh báo] Lỗi khi xóa collection: {exc}")
         self._init_collection()
 
     def delete_points_by_document_id(self, document_id: str):

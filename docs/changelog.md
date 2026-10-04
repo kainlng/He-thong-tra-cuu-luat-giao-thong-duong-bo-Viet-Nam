@@ -5,15 +5,69 @@
 ## [Unreleased]
 
 ### Added
+- **Bổ sung Kho Tài liệu Pháp luật & Bóc tách Hàng loạt (Batch Ingestion)**:
+  - Thêm mới **44 tệp PDF** văn bản quy phạm pháp luật giao thông đường bộ vào thư mục `data/raw/`.
+  - OCR của các trang scan không thực hiện thành công do giới hạn max_content_size; pipeline sau đó giữ native extraction result, dẫn tới trang scan không có hoặc có rất ít text.
+  - **Biện pháp xử lý**:
+    - Bổ sung tham số `XBERG_MAX_CONTENT_SIZE` vào [`src/core/config.py`](file:///e:/Python/He-thong-tra-cuu-luat-giao-thong-duong-bo-Viet-Nam/src/core/config.py) mặc định `1 * 1024 * 1024 * 1024` (1 GB).
+    - Cấu hình `SecurityLimits(max_content_size=self.max_content_size, max_pages=None)` đồng bộ vào cả `OcrConfig` và `ExtractionConfig` trong [`XbergProcessor`](file:///e:/Python/He-thong-tra-cuu-luat-giao-thong-duong-bo-Viet-Nam/src/ingestion/xberg_processor.py).
+      - Cập nhật trường `max_content_size` vào `get_config_dict()`: `config_hash` tự động thay đổi từ `cfg:5709869b9249` sang `cfg:2b7b1de02420`, giúp `IngestionManifest` nhận diện cấu hình trích xuất đã được nâng cấp và tự động bóc tách lại đầy đủ các tài liệu mà không cần can thiệp thủ công.
 - **Module Tiện ích Toàn cục (`src/core/utils.py`)**:
   - Hợp nhất các hàm tính mã băm SHA-256 trùng lặp (`calculate_pdf_hash` trong `data_loader.py` và `calculate_file_hash` trong `legal_parser.py`) thành hàm tiện ích duy nhất [`calculate_file_sha256`](file:///E:/Python/He-thong-tra-cuu-luat-giao-thong-duong-bo-Viet-Nam/src/core/utils.py#L6-L23) hỗ trợ đọc bộ đệm nhị phân 64KB (`chunk_size=65536`).
   - Cung cấp bí danh tương thích ngược (Backward compatibility aliases) cho `calculate_file_hash` và `calculate_pdf_hash`.
   - Bổ sung bộ kiểm thử tự động `test_calculate_file_sha256` trong [`tests/test_legal_parser.py`](file:///E:/Python/He-thong-tra-cuu-luat-giao-thong-duong-bo-Viet-Nam/tests/test_legal_parser.py).
 
 ### Kế hoạch phát triển
-- Tích hợp thêm bộ phân tích đa phương thức (Multimodal RAG) để nhận diện biển báo giao thông trực tiếp từ hình ảnh hiện trường.
 - Triển khai đánh giá tự động định lượng RAG Triad (Faithfulness, Answer Relevance, Context Recall) qua thư viện TruLens/Ragas tại thư mục `benchmark/RAGEval`.
 - Hỗ trợ lưu vết lịch sử hội thoại nhiều phiên vào PostgreSQL thay vì chỉ quản lý cục bộ trong Streamlit `st.session_state`.
+
+---
+
+## [2.0.0] - 2026-10-04
+
+### Added
+- **Kiến trúc Phân cấp Legal RAG v2.0**:
+  - **Hierarchical Legal Parser v2.0 (`src/ingestion/legal_parser.py`)**:
+    - Chuyển từ regex phân mảnh sang compiled header patterns (`clause_header_pattern`, `point_header_pattern`) kết hợp `re.finditer` và boundary slicing.
+    - Xử lý triệt để Anomaly Orphan Point (Điều chứa trực tiếp các Điểm mà không có Khoản đánh số) bằng synthetic container node (`clause_number: None`, `is_synthetic: True`), không tự bịa "Khoản 1".
+    - Trích xuất ngày ban hành và ngày có hiệu lực thực tế từ công thức ban hành hoặc điều khoản hiệu lực, không fallback về ngày giả định (`None` khi không tìm thấy).
+    - Cross-check cơ quan ban hành giữa số hiệu, tiêu ngữ và tên file, trả về kèm `source` và `confidence`.
+    - Bổ sung hàm kiểm định toàn vẹn cây `validate_parsed_tree()`.
+  - **Hierarchical Legal Chunker v2.0 (`src/ingestion/hierarchical_chunker.py`)**:
+    - Duy trì cấu trúc cây phân cấp 3 tầng: $\text{ArticleChunk} \xrightarrow{\text{parent\_chunk\_id}} \text{ClauseChunk} \xrightarrow{\text{parent\_chunk\_id}} \text{PointChunk}$.
+    - **Invariable 1**: Khi Khoản có Điểm con, `ClauseChunk.is_embeddable = False` (chỉ đóng vai trò context cha trên PostgreSQL). `PointChunk` kế thừa trọn vẹn ngữ cảnh đoạn mở đầu của Khoản (`clause_intro`) vào nội dung embedding.
+    - Bổ sung thuộc tính `root_article_chunk_id` trỏ thẳng về Điều luật gốc cho mọi chunk cháu chắt.
+    - Bổ sung hàm kiểm định đồ thị chunk `validate_chunk_tree()`.
+  - **Kiểm soát Token bằng Tokenizer Thật & Subchunking (`src/storage/indexer.py`)**:
+    - **Invariable 2**: Sử dụng Rust Fast Tokenizer từ `tokenizers.Tokenizer` nạp trực tiếp `intfloat/multilingual-e5-base` từ local cache.
+    - Tính toán token count trên chuỗi embedding hoàn chỉnh thực tế (`passage: [Luật...] [Điều...] [Khoản...] [Điểm...] {content}`), áp dụng trần cứng `HARD_MAX_TOKENS = 450` và mục tiêu `TARGET_TOKENS = 350`.
+    - Phân rã đa tầng (dấu câu lớn `[;.\n]` $\rightarrow$ dấu phẩy `,` $\rightarrow$ từ ngữ) xử lý các câu phạt dài không có dấu chấm.
+    - **Invariable 3**: Subchunk lưu trữ đầy đủ `source_chunk_id = original_chunk_id`, `subchunk_index`, và `parent_chunk_id = original_chunk_id`, đảm bảo khả năng truy ngược từ $\text{Subchunk} \rightarrow \text{Point} \rightarrow \text{Clause} \rightarrow \text{Article}$.
+  - **Cơ chế Lưu trữ Tô-pô & Đồng bộ Qdrant Payload Filter (`src/storage/`)**:
+    - `PostgresManager.insert_legal_tree()` chèn dữ liệu theo 4 tầng tô-pô độc lập (Article $\rightarrow$ Clause $\rightarrow$ Point $\rightarrow$ Subchunk), triệt tiêu lỗi vi phạm khóa ngoại `parent_chunk_id`.
+    - `QdrantManager` chỉ nạp các chunk `is_embeddable = True` và lưu trữ metadata payload tối giản cho pre-filtering. Bổ sung `delete_points_by_document_id()` loại bỏ orphan vectors khi nạp lại văn bản.
+  - **Tái Cấu Trúc XbergProcessor sang Native `scanned_pages` (`src/ingestion/xberg_processor.py`)**:
+    - Chuyển `XBERG_OCR_STRATEGY` từ `"auto"` sang `"scanned_pages"` với `XBERG_OCR_MIN_CONFIDENCE = 0.5`.
+    - Bổ sung hàm `resolve_ocr_strategy()` ưu tiên trực tiếp native binding `_rust.OcrStrategy.scanned_pages(min_confidence=...)` của phiên bản Xberg đang cài đặt.
+    - Bổ sung hàm `diagnose_scanned_pages()` sử dụng `mypdf` để phục vụ benchmark/chẩn đoán ngoài vòng chính.
+    - Chuẩn hóa provenance metadata phân tách rành mạch:
+      `{"source_type": "pdf", "extraction_backend": "xberg", "ocr_backend": "tesseract", "ocr_strategy": "scanned_pages"}`.
+- **Nạp Toàn Bộ Corpus Pháp Luật Giao Thông Đường Bộ**:
+  - Nạp trọn vẹn 11 văn bản pháp luật chính yếu vào PostgreSQL (5.352 chunks, 430 Điều, 2.138 Khoản, 2.586 Điểm) và Qdrant collection `legal_chunks` (5.349 vectors) với 0 lỗi.
+- **Bộ Kiểm Thử & Fixture Mới**:
+  - `tests/fixtures/`: 8 tệp golden fixture mô phỏng toàn bộ góc cạnh pháp lý (bình thường, khoản có điểm, chỉ có điều, điểm mồ côi, ngày thiếu, OCR nhiễu, điểm siêu dài).
+  - `tests/test_parser_fixtures.py`: Kiểm thử parser trên toàn bộ fixtures.
+  - `tests/test_chunker_hierarchy.py`: Kiểm thử quan hệ phả hệ chunk, tính thừa kế ngữ cảnh và cờ `is_embeddable`.
+  - `tests/test_token_control.py`: Kiểm thử bộ đếm token và subchunking.
+  - `tests/test_retrieval_benchmarks.py`: Kiểm thử truy vấn thực tế 5 kịch bản pháp lý.
+  - `tests/test_xberg_processor.py`: Kiểm thử 7 trường hợp trích xuất Xberg hybrid/scan/text và provenance.
+  - `tests/benchmark_detector.py`: So sánh chẩn đoán heuristic pypdf vs Xberg scanned_pages trên 12 tệp PDF.
+
+### Fixed
+- Khắc phục lỗi `zfill` crash trong [`HierarchicalContextExpander`](file:///e:/Python/He-thong-tra-cuu-luat-giao-thong-duong-bo-Viet-Nam/src/retrieval/context_expander.py) khi Điều luật chứa Khoản không đánh số (`clause_number is None`).
+- Khắc phục lỗi thiếu điểm phụ thuộc do so khớp `clause_number` lỏng lẻo; chuyển sang so khớp chính xác bằng khóa ngoại `clause_id == cl.id`.
+- Khắc phục lỗi `ValueError: Invalid OcrStrategy: missing field min_confidence` khi truyền chuỗi `"scanned_pages"` vào Xberg binding.
+- Dọn dẹp tệp nhị phân `vector_db/` khỏi Git tracking theo đúng quy tắc `.gitignore`.
 
 ---
 

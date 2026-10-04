@@ -222,8 +222,11 @@ def process_all_pdfs(
                 method="xberg_tesseract",
                 char_count=len(cleaned_text),
                 ocr_details={
+                    "extraction_backend": "xberg",
                     "ocr_backend": "tesseract",
                     "ocr_strategy": processor.ocr_strategy,
+                    "min_confidence": processor.min_confidence,
+                    "page_scan_detection": "xberg_scanned_pages",
                     "ocr_language": processor.language,
                     "force_ocr": force_ocr,
                 },

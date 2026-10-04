@@ -12,12 +12,15 @@ from xberg import (
     ExtractionConfig,
     PageConfig,
     OcrConfig,
+    SecurityLimits,
 )
 
 from src.core.config import (
     resolve_tessdata_dir,
     XBERG_OCR_STRATEGY,
+    XBERG_OCR_MIN_CONFIDENCE,
     XBERG_OCR_LANGUAGE,
+    XBERG_MAX_CONTENT_SIZE,
 )
 
 
@@ -83,23 +86,45 @@ def normalize_xberg_markdown(text: str) -> str:
     return text.strip()
 
 
+def resolve_ocr_strategy(strategy: Any, min_confidence: float = 0.5) -> Any:
+    """
+    Chuẩn hóa ocr_strategy sang định dạng native mà Rust binding của Xberg hỗ trợ.
+    Ưu tiên trực tiếp native API `_rust.OcrStrategy.scanned_pages(min_confidence=...)`
+    của phiên bản Xberg đang cài đặt, sau đó fallback sang dict `{"mode": "scanned_pages", ...}`.
+    """
+    if strategy == "scanned_pages" or strategy == {"mode": "scanned_pages"}:
+        try:
+            import xberg._xberg as _rust
+            if hasattr(_rust, "OcrStrategy") and hasattr(_rust.OcrStrategy, "scanned_pages") and callable(_rust.OcrStrategy.scanned_pages):
+                return _rust.OcrStrategy.scanned_pages(min_confidence=min_confidence)
+        except Exception:
+            pass
+        return {"mode": "scanned_pages", "min_confidence": min_confidence}
+    return strategy
+
+
 class XbergProcessor:
     """
     Bộ xử lý bóc tách tài liệu PDF sử dụng framework Xberg kết hợp Tesseract OCR.
-    Hỗ trợ auto-detect OCR, trích xuất cấu trúc trang có gắn thẻ <!-- PAGE {page_num} -->,
-    và chuẩn hóa tương thích tuyệt đối với parser cấu trúc phân cấp pháp luật.
+    Xberg sử dụng scanned_pages strategy để tự đánh giá các trang có đặc điểm giống scan
+    và OCR có chọn lọc; các trang còn lại được xử lý bằng native extraction.
+    Bảo tồn cấu trúc phân trang <!-- PAGE {page_num} --> và chuẩn hóa tương thích cho Legal Parser.
     """
 
     def __init__(
         self,
         language: Optional[List[str]] = None,
         ocr_strategy: Optional[str] = None,
+        min_confidence: Optional[float] = None,
         force_ocr: bool = False,
         tessdata_path: Optional[str] = None,
+        max_content_size: Optional[int] = None,
     ):
         self.language = language or XBERG_OCR_LANGUAGE
         self.ocr_strategy = ocr_strategy or XBERG_OCR_STRATEGY
+        self.min_confidence = min_confidence if min_confidence is not None else XBERG_OCR_MIN_CONFIDENCE
         self.force_ocr = force_ocr
+        self.max_content_size = max_content_size if max_content_size is not None else XBERG_MAX_CONTENT_SIZE
 
         resolved_tess = resolve_tessdata_dir() if tessdata_path is None else Path(tessdata_path)
         self.tessdata_path = str(resolved_tess.resolve())
@@ -107,24 +132,29 @@ class XbergProcessor:
     def get_config_dict(self, force_ocr: Optional[bool] = None) -> Dict[str, Any]:
         """Trả về từ điển cấu hình để sinh mã hash config cho IngestionManifest."""
         return {
-            "engine": "xberg",
+            "extraction_backend": "xberg",
             "ocr_backend": "tesseract",
             "language": self.language,
             "ocr_strategy": self.ocr_strategy,
+            "min_confidence": self.min_confidence,
+            "page_scan_detection": "xberg_scanned_pages",
             "force_ocr": self.force_ocr if force_ocr is None else force_ocr,
+            "max_content_size": self.max_content_size,
             "tessdata_path": self.tessdata_path,
         }
 
     @staticmethod
-    def detect_scanned_pages(pdf_path: Path) -> List[int]:
-        """Tự động phát hiện các trang scan dạng ảnh (thiếu text layer) trong PDF bằng pypdf."""
+    def diagnose_scanned_pages(pdf_path: Path) -> List[int]:
+        """
+        Diagnostic utility: Phát hiện các trang nghi ngờ là scan ảnh dựa trên heuristic pypdf.
+        Chỉ dùng phục vụ benchmark/so sánh chẩn đoán, không nằm trên luồng xử lý chính.
+        """
         scanned_pages = []
         try:
             import pypdf
             reader = pypdf.PdfReader(str(pdf_path))
             for idx, page in enumerate(reader.pages):
                 text = (page.extract_text() or "").strip()
-                # Nếu trang có ít hơn 50 ký tự text và có chứa đối tượng hình ảnh, đánh dấu là trang scan
                 if len(text) < 50 and len(page.images) > 0:
                     scanned_pages.append(idx + 1)
         except Exception:
@@ -139,10 +169,17 @@ class XbergProcessor:
         """Khởi tạo đối tượng ExtractionConfig của Xberg với các tham số tối ưu cho Legal RAG."""
         is_force_ocr = self.force_ocr if force_ocr is None else force_ocr
 
+        # Security limits: Tăng giới hạn uncompressed image memory lên 2GB (tránh huỷ OCR trên PDF scan nhiều trang)
+        sec_limits = SecurityLimits(
+            max_content_size=self.max_content_size,
+            max_pages=None,
+        )
+
         ocr_config = OcrConfig(
             backend="tesseract",
             language=self.language,
             tessdata_path=self.tessdata_path,
+            security_limits=sec_limits,
         )
 
         page_config = PageConfig(
@@ -151,13 +188,16 @@ class XbergProcessor:
             marker_format="\n\n<!-- PAGE {page_num} -->\n\n",
         )
 
+        resolved_strategy = resolve_ocr_strategy(self.ocr_strategy, self.min_confidence)
+
         return ExtractionConfig(
             output_format="markdown",
-            ocr_strategy=self.ocr_strategy,
+            ocr_strategy=resolved_strategy,
             force_ocr=is_force_ocr,
             force_ocr_pages=force_ocr_pages,
             ocr=ocr_config,
             pages=page_config,
+            security_limits=sec_limits,
             enable_quality_processing=True,
         )
 
@@ -165,24 +205,23 @@ class XbergProcessor:
         self,
         pdf_path: Path,
         force_ocr: Optional[bool] = None,
+        force_ocr_pages: Optional[List[int]] = None,
     ) -> str:
-        """Bóc tách PDF bất đồng bộ qua Xberg và trả về nội dung Markdown đã chuẩn hóa.
-        Hỗ trợ Hybrid PDF: tự động phát hiện các trang scan ảnh để ép OCR trang đó,
-        trong khi các trang text được trích xuất trực tiếp chuẩn xác 100%.
+        """
+        Bóc tách PDF bất đồng bộ qua Xberg và trả về nội dung Markdown đã chuẩn hóa.
+        Xberg sử dụng scanned_pages strategy để tự đánh giá các trang có đặc điểm giống scan
+        và OCR có chọn lọc; các trang còn lại được xử lý bằng native extraction.
         """
         if not pdf_path.exists():
             raise FileNotFoundError(f"Không tìm thấy file PDF: {pdf_path}")
 
         is_force_ocr = self.force_ocr if force_ocr is None else force_ocr
-        target_ocr_pages = None
 
-        if not is_force_ocr:
-            scanned_pages = self.detect_scanned_pages(pdf_path)
-            if scanned_pages:
-                print(f"  [Hybrid PDF] Tự động phát hiện {len(scanned_pages)} trang scan ảnh: {scanned_pages[:10]}...")
-                target_ocr_pages = scanned_pages
-
-        config = self.build_extraction_config(force_ocr=is_force_ocr, force_ocr_pages=target_ocr_pages)
+        # Xberg tự quản lý phân loại trang dựa trên scanned_pages (force_ocr_pages chỉ dùng khi manual debug override)
+        config = self.build_extraction_config(
+            force_ocr=is_force_ocr,
+            force_ocr_pages=force_ocr_pages,
+        )
         extract_input = ExtractInput(kind="uri", uri=str(pdf_path.resolve()))
 
         result = await extract(extract_input, config=config)
@@ -197,15 +236,21 @@ class XbergProcessor:
         self,
         pdf_path: Path,
         force_ocr: Optional[bool] = None,
+        force_ocr_pages: Optional[List[int]] = None,
     ) -> str:
         """Wrapper đồng bộ gọi extract_pdf_async qua asyncio.run()."""
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import nest_asyncio
-                nest_asyncio.apply()
-                return loop.run_until_complete(self.extract_pdf_async(pdf_path, force_ocr=force_ocr))
-        except Exception:
-            pass
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
 
-        return asyncio.run(self.extract_pdf_async(pdf_path, force_ocr=force_ocr))
+        if loop and loop.is_running():
+            import nest_asyncio
+            nest_asyncio.apply()
+            return loop.run_until_complete(
+                self.extract_pdf_async(pdf_path, force_ocr=force_ocr, force_ocr_pages=force_ocr_pages)
+            )
+
+        return asyncio.run(
+            self.extract_pdf_async(pdf_path, force_ocr=force_ocr, force_ocr_pages=force_ocr_pages)
+        )
