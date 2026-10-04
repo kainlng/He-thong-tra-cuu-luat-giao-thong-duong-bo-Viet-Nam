@@ -60,7 +60,7 @@ class LegalVersionORM(Base):
     id = Column(String(64), primary_key=True)
     document_id = Column(String(64), ForeignKey("legal_documents.id", ondelete="CASCADE"), nullable=False)
     version_number = Column(Integer, default=1)
-    effective_from = Column(Date, nullable=False)
+    effective_from = Column(Date, nullable=True)
     effective_to = Column(Date, nullable=True)
     status = Column(String(50), default="active")  # active, expired, replaced
     is_current = Column(Boolean, default=True)
@@ -125,7 +125,8 @@ class LegalClauseORM(Base):
     version_id = Column(String(64), ForeignKey("legal_versions.id", ondelete="CASCADE"), nullable=False)
     chapter_id = Column(String(64), ForeignKey("legal_chapters.id", ondelete="SET NULL"), nullable=True)
     article_id = Column(String(64), ForeignKey("legal_articles.id", ondelete="CASCADE"), nullable=False)
-    clause_number = Column(String(20), nullable=False)  # 1, 2, 9...
+    clause_number = Column(String(20), nullable=True)  # 1, 2, 9... or None for synthetic clause
+    clause_intro = Column(Text, nullable=True)  # Phần dẫn trước Điểm con
     content = Column(Text, nullable=False)
     order_num = Column(Integer, default=1)
     parent_id = Column(String(64), nullable=True)
@@ -167,8 +168,12 @@ class LegalChunkORM(Base):
     clause_id = Column(String(64), ForeignKey("legal_clauses.id", ondelete="SET NULL"), nullable=True)
     point_id = Column(String(64), ForeignKey("legal_points.id", ondelete="SET NULL"), nullable=True)
     parent_chunk_id = Column(String(64), ForeignKey("legal_chunks.id", ondelete="SET NULL"), nullable=True)
+    root_article_chunk_id = Column(String(64), nullable=True)
+    source_chunk_id = Column(String(64), nullable=True)
+    subchunk_index = Column(Integer, nullable=True)
+    is_embeddable = Column(Boolean, default=True)
     
-    chunk_type = Column(String(30), nullable=False)  # point, clause, article
+    chunk_type = Column(String(30), nullable=False)  # point, clause, article, subchunk
     chunk_index = Column(Integer, default=1)
     content = Column(Text, nullable=False)
     normalized_content = Column(Text, nullable=True)
@@ -209,7 +214,7 @@ class DocumentMetadata(BaseModel):
 
 
 class ValidityMetadata(BaseModel):
-    effective_from: str  # YYYY-MM-DD
+    effective_from: Optional[str] = None  # YYYY-MM-DD or None
     effective_to: Optional[str] = None  # YYYY-MM-DD or None
     status: str = "active"  # active, expired, replaced
     is_current: bool = True
@@ -232,6 +237,10 @@ class QdrantChunkPayload(BaseModel):
     clause_id: Optional[str] = None
     point_id: Optional[str] = None
     parent_chunk_id: Optional[str] = None
+    root_article_chunk_id: Optional[str] = None
+    source_chunk_id: Optional[str] = None
+    subchunk_index: Optional[int] = None
+    is_embeddable: bool = True
 
     document_number: str
     article_number: str
@@ -242,7 +251,7 @@ class QdrantChunkPayload(BaseModel):
     topics: List[str] = Field(default_factory=list)
     violation_types: List[str] = Field(default_factory=list)
 
-    effective_from: str
+    effective_from: Optional[str] = None
     effective_to: Optional[str] = None
     status: str = "active"
     is_current: bool = True
@@ -261,8 +270,12 @@ class LegalChunkDTO(BaseModel):
     clause_id: Optional[str] = None
     point_id: Optional[str] = None
     parent_chunk_id: Optional[str] = None
+    root_article_chunk_id: Optional[str] = None
+    source_chunk_id: Optional[str] = None
+    subchunk_index: Optional[int] = None
+    is_embeddable: bool = True
     
-    chunk_type: str  # point, clause, article
+    chunk_type: str  # point, clause, article, subchunk
     chunk_index: int = 1
     content: str
     normalized_content: Optional[str] = None

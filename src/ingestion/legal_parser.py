@@ -6,23 +6,86 @@ from typing import Dict, List, Any, Optional, Tuple
 from src.ingestion.data_loader import clean_legal_markdown
 from src.ingestion.xberg_processor import normalize_xberg_markdown
 from src.core.legal_rules import LEGAL_AGENCIES_CONFIG, DEFAULT_AGENCY
+from src.core.utils import calculate_file_sha256
+
+PARSER_VERSION = "2.0.0"
+
+# Backward compatibility alias
+calculate_file_hash = calculate_file_sha256
 
 
-def calculate_file_hash(file_path: Path) -> str:
-    """Tính mã băm SHA-256 của file để đảm bảo tính Idempotent (chống nạp trùng)."""
-    hasher = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        while chunk := f.read(65536):
-            hasher.update(chunk)
-    return f"sha256:{hasher.hexdigest()}"
+def validate_parsed_tree(parsed_tree: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """Xác thực tính toàn vẹn ngữ nghĩa và cấu trúc quan hệ của cây pháp lý sau khi parse.
+    
+    Kiểm tra:
+    - [x] Mọi Clause.article_id trỏ tới Article tồn tại
+    - [x] Mọi Point.clause_id trỏ tới Clause tồn tại
+    - [x] Clause.parent_id trỏ tới Article hợp lệ
+    - [x] Point.parent_id trỏ tới Clause hợp lệ
+    - [x] Không có duplicate IDs
+    - [x] Synthetic node được đánh dấu rõ và clause_number là None
+    """
+    errors: List[str] = []
+
+    doc = parsed_tree.get("document")
+    if not doc or not doc.get("id"):
+        errors.append("Document hoặc Document.id bị thiếu.")
+
+    articles = parsed_tree.get("articles", [])
+    clauses = parsed_tree.get("clauses", [])
+    points = parsed_tree.get("points", [])
+
+    art_ids = {a["id"] for a in articles}
+    cl_ids = {c["id"] for c in clauses}
+    pt_ids = {p["id"] for p in points}
+
+    # 1. Kiểm tra duplicate IDs
+    all_ids = []
+    for a in articles:
+        all_ids.append(a["id"])
+    for c in clauses:
+        all_ids.append(c["id"])
+    for p in points:
+        all_ids.append(p["id"])
+
+    seen_ids = set()
+    for uid in all_ids:
+        if uid in seen_ids:
+            errors.append(f"Duplicate node ID phát hiện: '{uid}'")
+        seen_ids.add(uid)
+
+    # 2. Kiểm tra quan hệ Clause -> Article
+    for cl in clauses:
+        if cl.get("article_id") not in art_ids:
+            errors.append(f"Clause '{cl.get('id')}' trỏ tới article_id không tồn tại: '{cl.get('article_id')}'")
+        if cl.get("parent_id") and cl.get("parent_id") not in art_ids:
+            errors.append(f"Clause '{cl.get('id')}' có parent_id không khớp với Article: '{cl.get('parent_id')}'")
+        if cl.get("is_synthetic") and cl.get("clause_number") is not None:
+            errors.append(f"Synthetic Clause '{cl.get('id')}' không được phép có clause_number: {cl.get('clause_number')}")
+
+    # 3. Kiểm tra quan hệ Point -> Clause
+    for pt in points:
+        if pt.get("clause_id") not in cl_ids:
+            errors.append(f"Point '{pt.get('id')}' trỏ tới clause_id không tồn tại: '{pt.get('clause_id')}'")
+        if pt.get("parent_id") and pt.get("parent_id") not in cl_ids:
+            errors.append(f"Point '{pt.get('id')}' có parent_id không khớp với Clause: '{pt.get('parent_id')}'")
+        if pt.get("article_id") not in art_ids:
+            errors.append(f"Point '{pt.get('id')}' trỏ tới article_id không tồn tại: '{pt.get('article_id')}'")
+
+    is_valid = len(errors) == 0
+    return is_valid, errors
 
 
 class HierarchicalLegalParser:
     """Parser phân tích cú pháp văn bản pháp luật Việt Nam:
     Văn bản -> Chương -> Điều -> Khoản -> Điểm.
+    Phiên bản 2.0: Sử dụng compiled header patterns + boundary slicing,
+    bảo toàn clause_intro, nhận diện orphan points, và trích xuất ngày/cơ quan tin cậy.
     """
 
     def __init__(self):
+        self.version = PARSER_VERSION
+
         # Regex nhận diện Chương: Chương I, Chương II, Chương 1, **Chương I...**
         self.chapter_pattern = re.compile(
             r"(?:^|\n)(?:#+\s*|\*{1,2}\s*)?(Chương\s+([IVXLCDM\d]+)[\.:\s]*([^\n\*#]*))(?:\*{1,2})?",
@@ -35,74 +98,136 @@ class HierarchicalLegalParser:
             re.IGNORECASE,
         )
 
-        # Regex nhận diện Khoản: 1. Nội dung, Khoản 1. Nội dung, - 1. Nội dung...
-        self.clause_pattern = re.compile(
-            r"(?:^|\n)(?:[-*•]\s*)?(?:Khoản\s+)?(\d+)[\.\)]\s+([^\n]+(?:\n(?!\s*(?:(?:[-*•]\s*)?(?:Khoản\s+)?\d+[\.\)]|(?:[-*•]\s*)?[a-đA-Đ][\.\)]|\*{1,2}?Điều|\#+))[^\n]+)*)",
+        # Regex nhận diện vị trí bắt đầu Khoản: 1., Khoản 1., - 1., • 1.
+        self.clause_header_pattern = re.compile(
+            r"(?:^|\n)\s*(?:[-*•]\s*)?(?:Khoản\s+)?(\d+)[\.\)]\s*",
             re.IGNORECASE,
         )
 
-        # Regex nhận diện Điểm: a) Nội dung, Điểm a) Nội dung, - a) Nội dung...
-        self.point_pattern = re.compile(
-            r"(?:^|\n)(?:[-*•]\s*)?(?:Điểm\s+)?([a-đA-Đ])[\.\)]\s+([^\n]+(?:\n(?!\s*(?:(?:[-*•]\s*)?(?:Khoản\s+)?\d+[\.\)]|(?:[-*•]\s*)?[a-đA-Đ][\.\)]|\*{1,2}?Điều|\#+))[^\n]+)*)",
+        # Regex nhận diện vị trí bắt đầu Điểm: a), Điểm a), - a), • a)
+        self.point_header_pattern = re.compile(
+            r"(?:^|\n)\s*(?:[-*•]\s*)?(?:Điểm\s+)?([a-đA-Đ])[\.\)]\s*",
             re.IGNORECASE,
         )
 
-    def extract_issuing_agency(self, doc_num: str, text: str, file_name: str) -> Tuple[Dict[str, str], str]:
-        """Tự động xác định cơ quan ban hành và loại văn bản dựa trên file cấu hình LEGAL_AGENCIES_CONFIG."""
+    def extract_issuing_agency(self, doc_num: str, text: str, file_name: str) -> Tuple[Dict[str, Any], str]:
+        """Tự động xác định cơ quan ban hành và loại văn bản dựa trên cross-check đa nguồn.
+        Trả về: (issuing_agency_dict, doc_type) kèm source và confidence.
+        """
         doc_num_upper = doc_num.upper()
         file_name_lower = file_name.lower()
-        header_sample = "\n".join(text.split("\n")[:25]).upper()
+        header_sample = "\n".join(text.split("\n")[:30]).upper()
 
-        # 1. Khớp theo hậu tố số hiệu văn bản (Độ chính xác cao nhất)
+        num_match_cfg = None
+        header_match_cfg = None
+        fn_match_cfg = None
+
         for cfg in LEGAL_AGENCIES_CONFIG:
-            if any(re.search(pat, doc_num_upper) for pat in cfg["num_patterns"]):
-                return {"name": cfg["name"], "code": cfg["code"]}, cfg["default_doc_type"]
+            if not num_match_cfg and any(re.search(pat, doc_num_upper) for pat in cfg["num_patterns"]):
+                num_match_cfg = cfg
+            if not header_match_cfg and any(kw in header_sample for kw in cfg["header_keywords"]):
+                header_match_cfg = cfg
+            if not fn_match_cfg and any(pat in file_name_lower for pat in cfg["filename_patterns"]):
+                fn_match_cfg = cfg
 
-        # 2. Khớp theo tên file
-        for cfg in LEGAL_AGENCIES_CONFIG:
-            if any(pat in file_name_lower for pat in cfg["filename_patterns"]):
-                return {"name": cfg["name"], "code": cfg["code"]}, cfg["default_doc_type"]
+        # Cross-check ưu tiên
+        if num_match_cfg and header_match_cfg and num_match_cfg["code"] == header_match_cfg["code"]:
+            return {
+                "name": num_match_cfg["name"],
+                "code": num_match_cfg["code"],
+                "confidence": "high",
+                "source": "header+doc_num",
+            }, num_match_cfg["default_doc_type"]
+        elif num_match_cfg:
+            return {
+                "name": num_match_cfg["name"],
+                "code": num_match_cfg["code"],
+                "confidence": "high",
+                "source": "doc_num",
+            }, num_match_cfg["default_doc_type"]
+        elif header_match_cfg:
+            return {
+                "name": header_match_cfg["name"],
+                "code": header_match_cfg["code"],
+                "confidence": "medium",
+                "source": "header",
+            }, header_match_cfg["default_doc_type"]
+        elif fn_match_cfg:
+            return {
+                "name": fn_match_cfg["name"],
+                "code": fn_match_cfg["code"],
+                "confidence": "low",
+                "source": "filename",
+            }, fn_match_cfg["default_doc_type"]
 
-        # 3. Khớp theo tiêu ngữ đầu văn bản (Header)
-        for cfg in LEGAL_AGENCIES_CONFIG:
-            if any(kw in header_sample for kw in cfg["header_keywords"]):
-                return {"name": cfg["name"], "code": cfg["code"]}, cfg["default_doc_type"]
+        return {
+            "name": None,
+            "code": None,
+            "confidence": "unknown",
+            "source": "unknown",
+        }, DEFAULT_AGENCY["default_doc_type"]
 
-        return {"name": DEFAULT_AGENCY["name"], "code": DEFAULT_AGENCY["code"]}, DEFAULT_AGENCY["default_doc_type"]
-
-    def extract_dates(self, text: str) -> Tuple[Optional[str], Optional[str]]:
-        """Bóc tách ngày ban hành (issued_date) và ngày có hiệu lực (effective_from)."""
+    def extract_dates(self, text: str) -> Dict[str, Any]:
+        """Bóc tách ngày ban hành (issued_date) và ngày có hiệu lực (effective_from) kèm nguồn và độ tin cậy.
+        Tuyệt đối không bịa ngày mặc định nếu không tìm thấy.
+        """
         issued_date = None
+        issued_source = None
+        issued_conf = "unknown"
+
         effective_from = None
+        effective_source = None
+        effective_conf = "unknown"
 
-        # 1. Bóc tách ngày ban hành
-        match_issued = re.search(
-            r"(?:ngày|thông qua ngày)\s+(\d{1,2})\s+tháng\s+(\d{1,2})\s+năm\s+(20\d{2}|19\d{2})",
-            text[:2500],
-            re.IGNORECASE,
-        )
-        if not match_issued:
-            match_issued = re.search(
-                r"(?:thông qua ngày|ngày)\s+(\d{1,2})\s+tháng\s+(\d{1,2})\s+năm\s+(20\d{2}|19\d{2})",
-                text[-2000:],
-                re.IGNORECASE,
-            )
-
-        if match_issued:
-            d, m, y = match_issued.group(1), match_issued.group(2), match_issued.group(3)
-            issued_date = f"{y}-{m.zfill(2)}-{d.zfill(2)}"
-
-        # 2. Bóc tách ngày có hiệu lực (thường ở Điều khoản thi hành)
-        match_eff = re.search(
-            r"(?:có hiệu lực|hiệu lực thi hành)(?:\s+từ|\s+kể từ)?\s+ngày\s+(\d{1,2})\s+tháng\s+(\d{1,2})\s+năm\s+(20\d{2}|19\d{2})",
+        # 1. Tìm ngày ban hành ở phần ký kết / tiêu ngữ cuối hoặc đầu văn bản (tránh bắt nhầm ngày viện dẫn căn cứ)
+        m_closing = re.search(
+            r"(?:Hà Nội|TP\.\s*Hồ Chí Minh|[A-ZĐa-đ\s]{2,20}),\s*ngày\s+(\d{1,2})\s+tháng\s+(\d{1,2})\s+năm\s+(\d{4})",
             text,
             re.IGNORECASE,
         )
-        if match_eff:
-            d, m, y = match_eff.group(1), match_eff.group(2), match_eff.group(3)
-            effective_from = f"{y}-{m.zfill(2)}-{d.zfill(2)}"
+        if m_closing:
+            d, m, y = m_closing.group(1), m_closing.group(2), m_closing.group(3)
+            issued_date = f"{y}-{m.zfill(2)}-{d.zfill(2)}"
+            issued_source = "closing_formula"
+            issued_conf = "high"
+        else:
+            # Tìm ở đầu văn bản (không nằm trong dòng 'Căn cứ')
+            header_lines = text.split("\n")[:25]
+            for hline in header_lines:
+                hline_clean = hline.strip()
+                if hline_clean.lower().startswith("căn cứ"):
+                    continue
+                m_head_date = re.search(r"ngày\s+(\d{1,2})\s+tháng\s+(\d{1,2})\s+năm\s+(\d{4})", hline_clean, re.IGNORECASE)
+                if m_head_date:
+                    d, m, y = m_head_date.group(1), m_head_date.group(2), m_head_date.group(3)
+                    issued_date = f"{y}-{m.zfill(2)}-{d.zfill(2)}"
+                    issued_source = "header"
+                    issued_conf = "medium"
+                    break
 
-        return issued_date, effective_from
+        # 2. Tìm ngày có hiệu lực thi hành (thường ở Điều khoản thi hành)
+        m_eff = re.search(
+            r"(?:có hiệu lực|hiệu lực thi hành)(?:\s+từ|\s+kể từ)?\s+ngày\s+(\d{1,2})\s+tháng\s+(\d{1,2})\s+năm\s+(\d{4})",
+            text,
+            re.IGNORECASE,
+        )
+        if m_eff:
+            eff_pos = m_eff.start()
+            pre_window = text[max(0, eff_pos - 30):eff_pos].lower()
+            if "hết" not in pre_window:
+                d, m, y = m_eff.group(1), m_eff.group(2), m_eff.group(3)
+                effective_from = f"{y}-{m.zfill(2)}-{d.zfill(2)}"
+                effective_source = "effective_clause"
+                effective_conf = "high"
+
+        return {
+            "issued_date": issued_date,
+            "issued_date_source": issued_source,
+            "issued_date_confidence": issued_conf,
+            "effective_from": effective_from,
+            "effective_date_source": effective_source,
+            "effective_date_confidence": effective_conf,
+        }
 
     def extract_document_info(self, text: str, file_name: str) -> Dict[str, Any]:
         """Trích xuất thông tin tổng quan của văn bản từ tên file hoặc phần đầu văn bản."""
@@ -116,7 +241,6 @@ class HierarchicalLegalParser:
             re.IGNORECASE,
         )
         if not num_match:
-            # Thử tìm dạng: Luật số 36/2024/QH15, Nghị định số 151/2024/NĐ-CP
             num_match = re.search(
                 r"(?:Luật|Nghị định|Thông tư|Quyết định|Nghị quyết)\s+số\s+([0-9]+[/-][0-9]+[/-][A-Za-z0-9Đđ\-_]+)",
                 text,
@@ -131,7 +255,6 @@ class HierarchicalLegalParser:
             else:
                 doc_num = raw_num
         else:
-            # 2. Nếu không thấy trong nội dung, phát hiện từ tên file (hỗ trợ cả dấu - và _)
             fn_match = re.search(r"(\d+)[-_](\d+)[-_]([a-zA-Z0-9Đđ]+(?:[-_][a-zA-Z0-9Đđ]+)?)", file_name)
             if fn_match:
                 doc_num = f"{fn_match.group(1)}/{fn_match.group(2)}/{fn_match.group(3).upper().replace('_', '-')}"
@@ -152,7 +275,6 @@ class HierarchicalLegalParser:
             clean_lines.append(l)
 
         for i, line in enumerate(clean_lines):
-            # Kiểm tra nếu dòng có dạng "Luật số ...", "Nghị định số ..."
             m_named_num = re.match(r"^(Luật|Nghị định|Thông tư|Quyết định|Nghị quyết)\s+số\b.*", line, re.IGNORECASE)
             if m_named_num:
                 kind_name = m_named_num.group(1).capitalize()
@@ -168,7 +290,6 @@ class HierarchicalLegalParser:
                         break
                 continue
 
-            # Bỏ qua các dòng chỉ chứa số hiệu (Số: ...)
             if re.match(r"^Số[\s:]", line, re.IGNORECASE):
                 continue
 
@@ -194,8 +315,8 @@ class HierarchicalLegalParser:
             }
             title = f"{type_labels.get(doc_type, 'Văn bản')} {doc_num}"
 
-        # 4. Trích xuất ngày ban hành và ngày hiệu lực
-        extracted_issued, extracted_effective = self.extract_dates(text)
+        # 4. Trích xuất ngày ban hành và ngày hiệu lực có nguồn & độ tin cậy
+        date_info = self.extract_dates(text)
 
         doc_id = "doc_" + re.sub(r"[^a-zA-Z0-9_]", "_", doc_num.replace("Đ", "D").replace("đ", "d")).lower().strip("_")
 
@@ -208,8 +329,12 @@ class HierarchicalLegalParser:
             "issuing_agency": issuing_agency,
             "domain": ["giao_thong_duong_bo"],
             "current_status": "active",
-            "issued_date": extracted_issued or "2024-01-01",
-            "effective_from": extracted_effective or "2025-01-01",
+            "issued_date": date_info["issued_date"],
+            "issued_date_source": date_info["issued_date_source"],
+            "issued_date_confidence": date_info["issued_date_confidence"],
+            "effective_from": date_info["effective_from"],
+            "effective_date_source": date_info["effective_date_source"],
+            "effective_date_confidence": date_info["effective_date_confidence"],
             "effective_to": None,
             "is_current": True,
         }
@@ -224,25 +349,20 @@ class HierarchicalLegalParser:
         page_start: int = 1,
         page_end: int = 1,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Tách các Khoản và Điểm bên trong một Điều luật kèm theo thông tin số trang."""
+        """Tách các Khoản và Điểm bên trong một Điều luật bằng Boundary Slicing."""
         clauses = []
         points = []
         seen_clause_ids = set()
         seen_point_ids = set()
 
-        # Tách theo từng dòng bắt đầu bằng số thứ tự Khoản: 1., 2., Khoản 1., - 1...
-        clause_blocks = re.split(r"(?:^|\n)(?=(?:[-*•]\s*)?(?:Khoản\s+)?\d+[\.\)])", article_text)
+        # 1. Tìm tất cả các boundary bắt đầu của Khoản
+        clause_matches = list(self.clause_header_pattern.finditer(article_text))
 
-        clause_order = 1
-        for block in clause_blocks:
-            block = block.strip()
-            if not block:
-                continue
-
-            match_clause = re.match(r"^(?:[-*•]\s*)?(?:Khoản\s+)?(\d+)[\.\)]\s*(.*)", block, re.DOTALL)
-            if match_clause:
-                clause_num = match_clause.group(1)
-                clause_content = match_clause.group(2).strip()
+        if clause_matches:
+            # Điều có các Khoản đánh số thực tế
+            clause_order = 1
+            for i, c_match in enumerate(clause_matches):
+                clause_num = c_match.group(1)
                 base_clause_id = f"clause_{art_id.replace('article_', '')}_{clause_num.zfill(2)}"
                 clause_id = base_clause_id
                 c_idx = 2
@@ -251,88 +371,183 @@ class HierarchicalLegalParser:
                     c_idx += 1
                 seen_clause_ids.add(clause_id)
 
-                # Kiểm tra xem trong Khoản này có chứa các Điểm: a), b), - a)... không
-                point_blocks = re.split(r"(?:^|\n)(?=(?:[-*•]\s*)?(?:Điểm\s+)?[a-đA-Đ][\.\)])", clause_content)
-                
-                point_order = 1
-                clause_body = point_blocks[0].strip() if point_blocks else clause_content
+                # Boundary slicing cho nội dung Khoản
+                c_start = c_match.start()
+                c_end = clause_matches[i + 1].start() if i + 1 < len(clause_matches) else len(article_text)
+                raw_clause_str = article_text[c_start:c_end].strip()
 
-                if len(point_blocks) > 1:
-                    for p_block in point_blocks[1:]:
-                        p_block = p_block.strip()
-                        if not p_block:
-                            continue
-                        match_point = re.match(r"^(?:[-*•]\s*)?(?:Điểm\s+)?([a-đA-Đ])[\.\)]\s*(.*)", p_block, re.DOTALL)
-                        if match_point:
-                            p_label = match_point.group(1).lower()
-                            p_content = match_point.group(2).strip()
-                            base_point_id = f"point_{clause_id.replace('clause_', '')}_{p_label}"
-                            point_id = base_point_id
-                            p_idx = 2
-                            while point_id in seen_point_ids:
-                                point_id = f"{base_point_id}_{p_idx}"
-                                p_idx += 1
-                            seen_point_ids.add(point_id)
+                # Nội dung sau header Khoản
+                c_body_start = c_match.end()
+                clause_body = article_text[c_body_start:c_end].strip()
 
-                            points.append({
-                                "id": point_id,
-                                "document_id": doc_id,
-                                "version_id": ver_id,
-                                "chapter_id": chap_id,
-                                "article_id": art_id,
-                                "clause_id": clause_id,
-                                "point_label": p_label,
-                                "content": p_content,
-                                "order_num": point_order,
-                                "parent_id": clause_id,
-                                "page_start": page_start,
-                                "page_end": page_end,
-                            })
-                            point_order += 1
+                # Tìm Điểm bên trong Khoản này
+                point_matches = list(self.point_header_pattern.finditer(clause_body))
 
-                clauses.append({
-                    "id": clause_id,
-                    "document_id": doc_id,
-                    "version_id": ver_id,
-                    "chapter_id": chap_id,
-                    "article_id": art_id,
-                    "clause_number": clause_num,
-                    "content": clause_body,
-                    "order_num": clause_order,
-                    "parent_id": art_id,
-                    "page_start": page_start,
-                    "page_end": page_end,
-                })
-                clause_order += 1
-            else:
-                # Nếu Điều không chia thành các Khoản đánh số (chỉ có 1 đoạn văn chung)
-                if not clauses:
-                    clause_id = f"clause_{art_id.replace('article_', '')}_01"
-                    if clause_id not in seen_clause_ids:
-                        seen_clause_ids.add(clause_id)
-                        clauses.append({
-                            "id": clause_id,
+                if point_matches:
+                    clause_intro = clause_body[:point_matches[0].start()].strip()
+                    point_order = 1
+
+                    for j, p_match in enumerate(point_matches):
+                        p_label = p_match.group(1).lower()
+                        base_point_id = f"point_{clause_id.replace('clause_', '')}_{p_label}"
+                        point_id = base_point_id
+                        p_idx = 2
+                        while point_id in seen_point_ids:
+                            point_id = f"{base_point_id}_{p_idx}"
+                            p_idx += 1
+                        seen_point_ids.add(point_id)
+
+                        p_content_start = p_match.end()
+                        p_content_end = point_matches[j + 1].start() if j + 1 < len(point_matches) else len(clause_body)
+                        p_content = clause_body[p_content_start:p_content_end].strip()
+
+                        points.append({
+                            "id": point_id,
                             "document_id": doc_id,
                             "version_id": ver_id,
                             "chapter_id": chap_id,
                             "article_id": art_id,
-                            "clause_number": "1",
-                            "content": block,
-                            "order_num": 1,
-                            "parent_id": art_id,
+                            "clause_id": clause_id,
+                            "point_label": p_label,
+                            "content": p_content,
+                            "order_num": point_order,
+                            "parent_id": clause_id,
                             "page_start": page_start,
                             "page_end": page_end,
                         })
+                        point_order += 1
+
+                    clauses.append({
+                        "id": clause_id,
+                        "document_id": doc_id,
+                        "version_id": ver_id,
+                        "chapter_id": chap_id,
+                        "article_id": art_id,
+                        "clause_number": clause_num,
+                        "clause_intro": clause_intro,
+                        "content": clause_intro,
+                        "clause_full_text": raw_clause_str,
+                        "is_synthetic": False,
+                        "synthetic_reason": None,
+                        "order_num": clause_order,
+                        "parent_id": art_id,
+                        "page_start": page_start,
+                        "page_end": page_end,
+                    })
+                else:
+                    clauses.append({
+                        "id": clause_id,
+                        "document_id": doc_id,
+                        "version_id": ver_id,
+                        "chapter_id": chap_id,
+                        "article_id": art_id,
+                        "clause_number": clause_num,
+                        "clause_intro": None,
+                        "content": clause_body,
+                        "clause_full_text": raw_clause_str,
+                        "is_synthetic": False,
+                        "synthetic_reason": None,
+                        "order_num": clause_order,
+                        "parent_id": art_id,
+                        "page_start": page_start,
+                        "page_end": page_end,
+                    })
+
                 clause_order += 1
+
+        else:
+            # Điều không có Khoản đánh số
+            # Kiểm tra xem có Điểm xuất hiện trực tiếp không (Orphan Points)
+            point_matches = list(self.point_header_pattern.finditer(article_text))
+            synth_clause_id = f"clause_{art_id.replace('article_', '')}_body"
+
+            if point_matches:
+                # Case E: Có Điểm trực tiếp mà không có Khoản đánh số
+                clause_intro = article_text[:point_matches[0].start()].strip()
+                point_order = 1
+
+                for j, p_match in enumerate(point_matches):
+                    p_label = p_match.group(1).lower()
+                    base_point_id = f"point_{synth_clause_id.replace('clause_', '')}_{p_label}"
+                    point_id = base_point_id
+                    p_idx = 2
+                    while point_id in seen_point_ids:
+                        point_id = f"{base_point_id}_{p_idx}"
+                        p_idx += 1
+                    seen_point_ids.add(point_id)
+
+                    p_content_start = p_match.end()
+                    p_content_end = point_matches[j + 1].start() if j + 1 < len(point_matches) else len(article_text)
+                    p_content = article_text[p_content_start:p_content_end].strip()
+
+                    points.append({
+                        "id": point_id,
+                        "document_id": doc_id,
+                        "version_id": ver_id,
+                        "chapter_id": chap_id,
+                        "article_id": art_id,
+                        "clause_id": synth_clause_id,
+                        "point_label": p_label,
+                        "content": p_content,
+                        "order_num": point_order,
+                        "parent_id": synth_clause_id,
+                        "page_start": page_start,
+                        "page_end": page_end,
+                    })
+                    point_order += 1
+
+                clauses.append({
+                    "id": synth_clause_id,
+                    "document_id": doc_id,
+                    "version_id": ver_id,
+                    "chapter_id": chap_id,
+                    "article_id": art_id,
+                    "clause_number": None,  # Không bịa Khoản 1
+                    "clause_intro": clause_intro,
+                    "content": clause_intro,
+                    "clause_full_text": article_text.strip(),
+                    "is_synthetic": True,
+                    "synthetic_reason": "article_without_numbered_clause_with_points",
+                    "order_num": 1,
+                    "parent_id": art_id,
+                    "page_start": page_start,
+                    "page_end": page_end,
+                })
+
+            else:
+                # Case C: Điều chỉ có văn bản thông thường (không có Khoản, không có Điểm)
+                clauses.append({
+                    "id": synth_clause_id,
+                    "document_id": doc_id,
+                    "version_id": ver_id,
+                    "chapter_id": chap_id,
+                    "article_id": art_id,
+                    "clause_number": None,  # Không bịa Khoản 1
+                    "clause_intro": None,
+                    "content": article_text.strip(),
+                    "clause_full_text": article_text.strip(),
+                    "is_synthetic": True,
+                    "synthetic_reason": "article_without_numbered_clause",
+                    "order_num": 1,
+                    "parent_id": art_id,
+                    "page_start": page_start,
+                    "page_end": page_end,
+                })
 
         return clauses, points
 
-    def parse_markdown(self, markdown_text: str, file_name: str, file_hash: str = "") -> Dict[str, Any]:
+    def parse_markdown(
+        self,
+        markdown_text: str,
+        file_name: str,
+        file_hash: str = "",
+        extraction_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Phân tích toàn bộ văn bản markdown thành cây cấu trúc pháp lý hoàn chỉnh kèm page tracking."""
         cleaned_text = clean_legal_markdown(normalize_xberg_markdown(markdown_text))
         doc_info = self.extract_document_info(cleaned_text, file_name)
 
-        # 0. Trích xuất vị trí các marker trang <!-- PAGE \d+ --> để map số trang thực tế
+        # Trích xuất vị trí các marker trang <!-- PAGE \d+ --> để map số trang thực tế
         page_markers: List[Tuple[int, int]] = []
         for m_page in re.finditer(r"<!--\s*PAGE\s+(\d+)\s*-->", cleaned_text):
             page_markers.append((m_page.start(), int(m_page.group(1))))
@@ -360,6 +575,19 @@ class HierarchicalLegalParser:
         doc_id = doc_info["id"]
         ver_id = f"version_{doc_id.replace('doc_', '')}_v1"
 
+        # Thiết lập provenance thực tế
+        provenance = {
+            "file_name": file_name,
+            "file_hash": file_hash,
+            "source_type": extraction_metadata.get("source_type", "pdf") if extraction_metadata else "pdf",
+            "page_start": doc_page_start,
+            "page_end": doc_page_end,
+            "ocr_engine": extraction_metadata.get("ocr_engine", "tesseract") if extraction_metadata else "tesseract",
+            "ocr_backend": extraction_metadata.get("ocr_backend", "xberg") if extraction_metadata else "xberg",
+            "extraction_method": extraction_metadata.get("method", "xberg") if extraction_metadata else "xberg",
+            "parser_version": self.version,
+        }
+
         # 1. Tạo LegalDocument
         document = {
             "id": doc_id,
@@ -370,18 +598,14 @@ class HierarchicalLegalParser:
             "issuing_agency": doc_info["issuing_agency"],
             "domain": doc_info["domain"],
             "issued_date": doc_info["issued_date"],
+            "issued_date_source": doc_info.get("issued_date_source"),
+            "issued_date_confidence": doc_info.get("issued_date_confidence"),
             "first_effective_date": doc_info["effective_from"],
+            "effective_date_source": doc_info.get("effective_date_source"),
+            "effective_date_confidence": doc_info.get("effective_date_confidence"),
             "current_status": doc_info["current_status"],
             "language": "vi",
-            "source": {
-                "file_name": file_name,
-                "file_hash": file_hash,
-                "source_type": "pdf_ocr",
-                "page_start": doc_page_start,
-                "page_end": doc_page_end,
-                "ocr_engine": "tesseract",
-                "ocr_backend": "xberg",
-            },
+            "source": provenance,
         }
 
         # 2. Tạo LegalVersion
@@ -399,7 +623,6 @@ class HierarchicalLegalParser:
             "legal_basis": [],
         }
 
-        # Map to store unique chapters and merged articles
         chapters_dict = {}
         articles_dict = {}
 
@@ -417,7 +640,6 @@ class HierarchicalLegalParser:
 
             art_id = f"article_{doc_id.replace('doc_', '')}_{art_num.zfill(2)}"
 
-            # Lấy nội dung của Điều
             start_pos = match.end()
             end_pos = article_matches[i + 1].start() if i + 1 < len(article_matches) else len(cleaned_text)
             art_body = cleaned_text[start_pos:end_pos].strip()
@@ -469,7 +691,6 @@ class HierarchicalLegalParser:
                 }
                 article_order += 1
             else:
-                # Nếu Điều này bị ngắt trang lặp lại tiêu đề, gộp phần nội dung tiếp theo
                 if art_body:
                     articles_dict[art_id]["body_segments"].append(art_body)
                     articles_dict[art_id]["raw_text"] += "\n" + art_body
@@ -480,7 +701,6 @@ class HierarchicalLegalParser:
         all_clauses = []
         all_points = []
 
-        # Phân tích Khoản và Điểm cho từng Điều đã được hợp nhất hoàn chỉnh
         for art in articles:
             combined_body = "\n".join(art.get("body_segments", []))
             clauses, points = self.parse_clauses_and_points(
@@ -495,11 +715,19 @@ class HierarchicalLegalParser:
             all_clauses.extend(clauses)
             all_points.extend(points)
 
-        return {
+        parsed_tree = {
             "document": document,
             "version": version,
             "chapters": chapters,
             "articles": articles,
             "clauses": all_clauses,
             "points": all_points,
+            "parser_version": self.version,
         }
+
+        # Kiểm tra tính toàn vẹn
+        is_valid, validation_errors = validate_parsed_tree(parsed_tree)
+        if not is_valid:
+            print(f"[Parser Cảnh báo Validation]: Phát hiện {len(validation_errors)} vấn đề: {validation_errors}")
+
+        return parsed_tree

@@ -12,6 +12,7 @@ from src.ingestion.data_loader import (
     load_xberg_processor,
 )
 from src.ingestion.legal_parser import HierarchicalLegalParser, calculate_file_hash
+from src.core.utils import calculate_file_sha256
 from src.ingestion.hierarchical_chunker import (
     HierarchicalLegalChunker,
     remove_vietnamese_accents,
@@ -33,6 +34,7 @@ __all__ = [
     "load_llamaindex_processor",
     "HierarchicalLegalParser",
     "calculate_file_hash",
+    "calculate_file_sha256",
     "HierarchicalLegalChunker",
     "remove_vietnamese_accents",
     "extract_legal_topics_and_violations",

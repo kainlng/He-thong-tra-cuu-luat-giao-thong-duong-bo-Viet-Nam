@@ -130,7 +130,7 @@ class PostgresManager:
                 session.flush()
 
                 # 2. Version
-                eff_from = datetime.strptime(ver_data["effective_from"], "%Y-%m-%d").date() if ver_data.get("effective_from") else date(2025, 1, 1)
+                eff_from = datetime.strptime(ver_data["effective_from"], "%Y-%m-%d").date() if ver_data.get("effective_from") else None
                 eff_to = datetime.strptime(ver_data["effective_to"], "%Y-%m-%d").date() if ver_data.get("effective_to") else None
 
                 ver_orm = LegalVersionORM(
@@ -188,7 +188,8 @@ class PostgresManager:
                         version_id=cl["version_id"],
                         chapter_id=chap_ref,
                         article_id=cl["article_id"],
-                        clause_number=cl["clause_number"],
+                        clause_number=cl.get("clause_number"),
+                        clause_intro=cl.get("clause_intro"),
                         content=cl["content"],
                         order_num=cl.get("order_num", 1),
                         parent_id=cl.get("parent_id"),
@@ -214,10 +215,7 @@ class PostgresManager:
                     session.add(pt_orm)
                 session.flush()
 
-                # 7. Chunks - Tách Root Chunks (parent=None) chèn trước, Leaf Chunks chèn sau
-                root_chunks = [c for c in chunks if not c.get("parent_chunk_id")]
-                leaf_chunks = [c for c in chunks if c.get("parent_chunk_id")]
-
+                # 7. Chunks - Topological level-by-level insertion to avoid Foreign Key violations
                 def create_chunk_orm(chk: Dict[str, Any], is_root: bool = False) -> LegalChunkORM:
                     chap_ref = chk.get("chapter_id") if chk.get("chapter_id") in valid_chapter_ids else None
                     art_ref = chk["article_id"] if chk["article_id"] in valid_article_ids else None
@@ -233,6 +231,10 @@ class PostgresManager:
                         clause_id=cl_ref,
                         point_id=pt_ref,
                         parent_chunk_id=None if is_root else chk.get("parent_chunk_id"),
+                        root_article_chunk_id=chk.get("root_article_chunk_id"),
+                        source_chunk_id=chk.get("source_chunk_id"),
+                        subchunk_index=chk.get("subchunk_index"),
+                        is_embeddable=chk.get("is_embeddable", True),
                         chunk_type=chk["chunk_type"],
                         chunk_index=chk.get("chunk_index", 1),
                         content=chk["content"],
@@ -244,13 +246,31 @@ class PostgresManager:
                         search=chk.get("search", {}),
                     )
 
-                # Chèn Root Chunks
-                for chk in root_chunks:
+                # Level 0: Article Chunks (parent_chunk_id is None)
+                level_0 = [c for c in chunks if not c.get("parent_chunk_id")]
+                for chk in level_0:
                     session.add(create_chunk_orm(chk, is_root=True))
                 session.flush()
+                level_0_ids = {c["id"] for c in level_0}
 
-                # Chèn Leaf Chunks
-                for chk in leaf_chunks:
+                # Level 1: Clause Chunks (parent_chunk_id in level_0)
+                level_1 = [c for c in chunks if c.get("parent_chunk_id") in level_0_ids]
+                for chk in level_1:
+                    session.add(create_chunk_orm(chk, is_root=False))
+                session.flush()
+                level_1_ids = {c["id"] for c in level_1}
+
+                # Level 2: Point Chunks (parent_chunk_id in level_1)
+                level_2 = [c for c in chunks if c.get("parent_chunk_id") in level_1_ids]
+                for chk in level_2:
+                    session.add(create_chunk_orm(chk, is_root=False))
+                session.flush()
+                level_2_ids = {c["id"] for c in level_2}
+
+                # Level 3: Subchunks & remaining chunks
+                processed_ids = level_0_ids | level_1_ids | level_2_ids
+                remaining = [c for c in chunks if c["id"] not in processed_ids]
+                for chk in remaining:
                     session.add(create_chunk_orm(chk, is_root=False))
                 session.flush()
 
@@ -305,9 +325,10 @@ class PostgresManager:
                         "article_number": art.article_number if art else "",
                         "title": art.title if art else "",
                         "clause_count": len(clauses),
-                        "clauses": [{"number": c.clause_number, "content": c.content} for c in clauses],
-                        "points": [{"clause_id": p.clause_id, "label": p.point_label, "content": p.content} for p in points],
+                        "clauses": [{"id": c.id, "number": c.clause_number, "content": c.content, "intro": c.clause_intro} for c in clauses],
+                        "points": [{"id": p.id, "clause_id": p.clause_id, "label": p.point_label, "content": p.content} for p in points],
                     },
+                    "source_chunk_id": chunk.source_chunk_id,
                     "validity": chunk.validity or {},
                     "source": chunk.source or {},
                     "metadata": chunk.metadata_json or {},

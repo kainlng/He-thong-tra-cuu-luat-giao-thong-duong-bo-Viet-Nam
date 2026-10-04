@@ -44,11 +44,17 @@ class HierarchicalContextExpander:
             body_lines = []
             if clauses:
                 for cl in clauses:
-                    cl_num = cl["number"]
-                    cl_content = cl["content"]
-                    body_lines.append(f"{cl_num}. {cl_content}")
-                    # Attach points under this clause
-                    matching_points = [p for p in points if p.get("clause_id", "").endswith(f"_{cl_num.zfill(2)}")]
+                    cl_num = cl.get("number")
+                    cl_id = cl.get("id")
+                    cl_content = cl.get("content", "")
+                    
+                    if cl_num:
+                        body_lines.append(f"{cl_num}. {cl_content}")
+                    else:
+                        body_lines.append(cl_content)
+
+                    # Attach points under this clause matching directly by clause_id
+                    matching_points = [p for p in points if p.get("clause_id") == cl_id]
                     for pt in matching_points:
                         body_lines.append(f"   {pt['label']}) {pt['content']}")
             else:

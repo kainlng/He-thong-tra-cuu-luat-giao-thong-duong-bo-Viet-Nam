@@ -327,6 +327,7 @@ flowchart LR
 | Phân hệ / Trách nhiệm | Tệp Nguồn / Thư mục | Các Lớp & Hàm Trọng tâm |
 | :--- | :--- | :--- |
 | **Cấu hình & Biến môi trường** | [`src/core/config.py`](file:///E:/Python/He-thong-tra-cuu-luat-giao-thong-duong-bo-Viet-Nam/src/core/config.py) | `resolve_tessdata_dir`, `get_llama_cloud_api_keys`, các biến kết nối DB |
+| **Tiện ích Hệ thống & Băm Tệp** | [`src/core/utils.py`](file:///E:/Python/He-thong-tra-cuu-luat-giao-thong-duong-bo-Viet-Nam/src/core/utils.py) | [`calculate_file_sha256`](file:///E:/Python/He-thong-tra-cuu-luat-giao-thong-duong-bo-Viet-Nam/src/core/utils.py#L6-L23) (tính hash SHA-256 chống trùng lặp, alias cho `calculate_file_hash`, `calculate_pdf_hash`) |
 | **Quy tắc Pháp lý** | [`src/core/legal_rules.py`](file:///E:/Python/He-thong-tra-cuu-luat-giao-thong-duong-bo-Viet-Nam/src/core/legal_rules.py) | `LEGAL_AGENCIES_CONFIG`, `DEFAULT_AGENCY` |
 | **Lược đồ Dữ liệu (ORM & Schemas)** | [`src/core/models.py`](file:///E:/Python/He-thong-tra-cuu-luat-giao-thong-duong-bo-Viet-Nam/src/core/models.py) | `LegalDocumentORM`, `LegalArticleORM`, `LegalChunkORM`, `QdrantChunkPayload` |
 | **Bóc tách PDF qua XBerg** | [`src/ingestion/xberg_processor.py`](file:///E:/Python/He-thong-tra-cuu-luat-giao-thong-duong-bo-Viet-Nam/src/ingestion/xberg_processor.py) | [`XbergProcessor`](file:///E:/Python/He-thong-tra-cuu-luat-giao-thong-duong-bo-Viet-Nam/src/ingestion/xberg_processor.py#L86-L179), [`normalize_xberg_markdown`](file:///E:/Python/He-thong-tra-cuu-luat-giao-thong-duong-bo-Viet-Nam/src/ingestion/xberg_processor.py#L24-L84) |

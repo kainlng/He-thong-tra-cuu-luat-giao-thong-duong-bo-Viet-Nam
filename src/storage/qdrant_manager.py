@@ -91,6 +91,19 @@ class QdrantManager:
         else:
             print(f"[Qdrant] Collection '{self.collection_name}' đã sẵn sàng.")
 
+    def reset_collection(self):
+        """Xóa và khởi tạo lại collection Qdrant để đồng bộ dữ liệu sạch."""
+        if not self.client:
+            return
+        try:
+            collections = [c.name for c in self.client.get_collections().collections]
+            if self.collection_name in collections:
+                print(f"[Qdrant] Đang xóa collection cũ: '{self.collection_name}'...")
+                self.client.delete_collection(collection_name=self.collection_name)
+        except Exception as exc:
+            print(f"[Qdrant Cảnh báo] Lỗi khi xóa collection: {exc}")
+        self._init_collection()
+
     def _create_payload_indexes(self):
         """Đánh chỉ mục trên Payload để tăng tốc truy vấn Pre-filtering."""
         payload_fields = [
@@ -116,12 +129,16 @@ class QdrantManager:
         return str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id))
 
     def upsert_chunks(self, chunks: List[Dict[str, Any]], embeddings: np.ndarray):
-        """Upsert danh sách Chunks và Vector vào Qdrant với minimal payload (không chứa raw text)."""
+        """Upsert danh sách Chunks và Vector vào Qdrant với minimal payload (chỉ nạp is_embeddable=True)."""
         if not self.client or len(chunks) == 0:
             return
 
         points = []
         for i, chunk in enumerate(chunks):
+            # Chỉ nạp các chunks thực sự cần vector retrieval (Point, Leaf Clause, Subchunks)
+            if not chunk.get("is_embeddable", True):
+                continue
+
             point_uuid = self.chunk_id_to_uuid(chunk["id"])
             vector = embeddings[i].tolist() if hasattr(embeddings[i], "tolist") else list(embeddings[i])
 
@@ -139,6 +156,11 @@ class QdrantManager:
                 "clause_id": chunk.get("clause_id"),
                 "point_id": chunk.get("point_id"),
                 "parent_chunk_id": chunk.get("parent_chunk_id"),
+                "root_article_chunk_id": chunk.get("root_article_chunk_id"),
+                "source_chunk_id": chunk.get("source_chunk_id"),
+                "subchunk_index": chunk.get("subchunk_index"),
+                "is_embeddable": True,
+                "chunk_type": chunk.get("chunk_type", "point"),
                 "document_number": meta.get("document_number", ""),
                 "article_number": meta.get("article_number", ""),
                 "clause_number": meta.get("clause_number"),
@@ -147,7 +169,7 @@ class QdrantManager:
                 "domain": meta.get("domain", "giao_thong_duong_bo"),
                 "topics": meta.get("topics", []),
                 "violation_types": meta.get("violation_types", []),
-                "effective_from": validity.get("effective_from", "2025-01-01"),
+                "effective_from": validity.get("effective_from"),
                 "effective_to": validity.get("effective_to"),
                 "status": validity.get("status", "active"),
                 "is_current": validity.get("is_current", True),
@@ -221,6 +243,9 @@ class QdrantManager:
                     "article_id": hit.payload.get("article_id"),
                     "document_id": hit.payload.get("document_id"),
                     "document_number": hit.payload.get("document_number"),
+                    "source_chunk_id": hit.payload.get("source_chunk_id"),
+                    "root_article_chunk_id": hit.payload.get("root_article_chunk_id"),
+                    "chunk_type": hit.payload.get("chunk_type"),
                     "topics": hit.payload.get("topics", []),
                     "violation_types": hit.payload.get("violation_types", []),
                     "payload": hit.payload,
@@ -268,6 +293,9 @@ class QdrantManager:
                         "article_id": payload.get("article_id"),
                         "document_id": payload.get("document_id"),
                         "document_number": payload.get("document_number"),
+                        "source_chunk_id": payload.get("source_chunk_id"),
+                        "root_article_chunk_id": payload.get("root_article_chunk_id"),
+                        "chunk_type": payload.get("chunk_type"),
                         "topics": payload.get("topics", []),
                         "violation_types": payload.get("violation_types", []),
                         "payload": payload,

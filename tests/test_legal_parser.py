@@ -65,10 +65,22 @@ def test_parser_thong_tu():
     print("✅ test_parser_thong_tu PASSED")
 
 
+def test_calculate_file_sha256():
+    from src.core.utils import calculate_file_sha256, calculate_file_hash, calculate_pdf_hash
+    test_path = BASE_DIR / "requirements.txt"
+    hash_val = calculate_file_sha256(test_path)
+    assert hash_val.startswith("sha256:"), f"Invalid hash prefix: {hash_val}"
+    assert calculate_file_hash(test_path) == hash_val, "Alias calculate_file_hash mismatch"
+    assert calculate_pdf_hash(test_path) == hash_val, "Alias calculate_pdf_hash mismatch"
+    print("✅ test_calculate_file_sha256 PASSED")
+
+
 if __name__ == "__main__":
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    test_calculate_file_sha256()
     test_parser_luat()
     test_parser_nghi_dinh()
     test_parser_thong_tu()
     print("\n🎉 ALL TESTS PASSED SUCCESSFULLY!")
+

@@ -88,16 +88,20 @@ def run_all_tests():
     assert "article" in rich_ctx[0] and "document" in rich_ctx[0]
     print(f"  ✅ PostgreSQL Context Expansion OK: Truy xuất thành công thông tin Điều {rich_ctx[0]['article']['article_number']}.")
 
-    # 5. Test Embedder & Qdrant Upsert
-    print("\n[TEST 5] Kiểm tra Embedder & Qdrant Upsert...")
+    # 5. Test Embedder & Qdrant Upsert (chỉ embed is_embeddable=True)
+    print("\n[TEST 5] Kiểm tra Token Control, Embedder & Qdrant Upsert...")
     embedder = LlamaIndexEmbedder()
-    sample_texts = [c["content"] for c in chunks]
+    from src.storage.indexer import process_chunks_token_control
+    controlled_chunks = process_chunks_token_control(chunks, tokenizer=embedder.tokenizer)
+    embeddable_chunks = [c for c in controlled_chunks if c.get("is_embeddable", True)]
+
+    sample_texts = [c["content"] for c in embeddable_chunks]
     embs = embedder.get_document_embeddings(sample_texts, batch_size=8)
-    assert embs.shape[0] == len(chunks), "Embeddings count mismatch"
+    assert embs.shape[0] == len(embeddable_chunks), "Embeddings count mismatch"
     
     qdrant_mgr = QdrantManager()
-    qdrant_mgr.upsert_chunks(chunks, embs)
-    print(f"  ✅ Qdrant Upsert OK: Đã nạp {len(chunks)} vectors (dim={embs.shape[1]}).")
+    qdrant_mgr.upsert_chunks(embeddable_chunks, embs)
+    print(f"  ✅ Qdrant Upsert OK: Đã nạp {len(embeddable_chunks)} vectors (dim={embs.shape[1]}) cho các chunk embeddable.")
 
     # 6. Test Qdrant Filtered Search
     print("\n[TEST 6] Kiểm tra Qdrant Filtered Search...")

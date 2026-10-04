@@ -23,19 +23,14 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from src.core.config import RAW_DIR, PROCESSED_DIR
+from src.core.utils import calculate_file_sha256
 from src.ingestion.xberg_processor import XbergProcessor, normalize_xberg_markdown
 
 
 MANIFEST_FILE_NAME = ".data_loader_manifest.json"
 
-
-def calculate_pdf_hash(pdf_path: Path) -> str:
-    """Calculate SHA-256 hash of a PDF file to detect content changes."""
-    sha256 = hashlib.sha256()
-    with open(pdf_path, "rb") as f:
-        while chunk := f.read(8192):
-            sha256.update(chunk)
-    return f"sha256:{sha256.hexdigest()}"
+# Backward compatibility alias
+calculate_pdf_hash = calculate_file_sha256
 
 
 def calculate_config_hash(config_dict: Dict[str, Any]) -> str:

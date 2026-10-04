@@ -114,12 +114,18 @@ POSTGRES_URL = os.getenv(
 # Qdrant Settings
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
-QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "legal_chunks")
+QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "legal_chunks_v2")
 QDRANT_LOCAL_PATH = os.getenv("QDRANT_LOCAL_PATH", str(VECTOR_DB_DIR / "qdrant_storage"))
 
-# Embedding Model Configuration
+# Embedding Model Configuration & Token Control
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base")
 EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", 768))
+EMBED_TARGET_TOKENS = int(os.getenv("EMBED_TARGET_TOKENS", 350))
+EMBED_HARD_MAX_TOKENS = int(os.getenv("EMBED_HARD_MAX_TOKENS", 450))
+
+# Pipeline Versioning
+PIPELINE_VERSION = "2.0.0"
+CHUNKING_VERSION = "legal-hierarchical-v2"
 
 # LLM Model Configuration
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")

@@ -43,8 +43,10 @@ from src.core.models import (
     QdrantChunkPayload,
     LegalChunkDTO,
 )
+from src.core.utils import calculate_file_sha256
 
 __all__ = [
+    "calculate_file_sha256",
     "BASE_DIR",
     "DATA_DIR",
     "RAW_DIR",
