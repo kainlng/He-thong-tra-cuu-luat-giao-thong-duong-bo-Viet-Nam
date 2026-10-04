@@ -100,6 +100,7 @@ def run_ingestion(
 
         # 6. Upsert Vector và Payload tối giản vào Qdrant (chỉ nạp embeddable chunks)
         print("  -> Đang đồng bộ Vector và Metadata Filter vào Qdrant...")
+        qdrant_mgr.delete_points_by_document_id(parsed_tree["document"]["id"])
         qdrant_mgr.upsert_chunks(embeddable_chunks, embeddings)
 
         total_chunks_indexed += len(embeddable_chunks)

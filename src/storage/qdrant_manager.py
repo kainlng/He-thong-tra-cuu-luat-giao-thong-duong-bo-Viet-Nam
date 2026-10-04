@@ -100,9 +100,28 @@ class QdrantManager:
             if self.collection_name in collections:
                 print(f"[Qdrant] Đang xóa collection cũ: '{self.collection_name}'...")
                 self.client.delete_collection(collection_name=self.collection_name)
-        except Exception as exc:
-            print(f"[Qdrant Cảnh báo] Lỗi khi xóa collection: {exc}")
         self._init_collection()
+
+    def delete_points_by_document_id(self, document_id: str):
+        """Xóa toàn bộ vectors của một văn bản cụ thể trong Qdrant trước khi nạp lại (tránh orphan vectors)."""
+        if not self.client:
+            return
+        try:
+            self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=rest_models.Filter(
+                    must=[
+                        rest_models.FieldCondition(
+                            key="document_id",
+                            match=rest_models.MatchValue(value=document_id),
+                        )
+                    ]
+                ),
+            )
+            print(f"[Qdrant] Đã dọn dẹp các vectors cũ của văn bản: {document_id}")
+        except Exception as exc:
+            # Nếu collection mới hoặc rỗng thì bỏ qua
+            pass
 
     def _create_payload_indexes(self):
         """Đánh chỉ mục trên Payload để tăng tốc truy vấn Pre-filtering."""
